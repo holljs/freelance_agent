@@ -21,12 +21,9 @@ client = Client(api_token=REPLICATE_API_TOKEN)
 vk_session = vk_api.VkApi(token=VK_TOKEN)
 vk = vk_session.get_api()
 
-# Расширенный список категорий Хабр Фриланса
+# Меняем Хабр на крупнейшую биржу FL.ru (Категория: Программирование)
 RSS_URLS = [
-    "https://freelance.habr.com/tasks.rss?category_id=98",  # Боты и ИИ
-    "https://freelance.habr.com/tasks.rss?category_id=97",  # Парсинг и скрипты
-    "https://freelance.habr.com/tasks.rss?category_id=113", # Интеграция API
-    "https://freelance.habr.com/tasks.rss?category_id=73"   # Бэкенд (Python/Веб)
+    "https://www.fl.ru/rss/all.xml?category=5"
 ]
 
 # Файл памяти, чтобы не присылать одни и те же заказы
@@ -81,23 +78,23 @@ def analyze_and_pitch(title, description, link):
     return response
 
 def check_freelance():
-    print("\nПроверяю биржу...")
+    print("\nПроверяю биржу FL.ru...")
     processed = load_processed_tasks()
     
-    # Надеваем маску обычного пользователя Chrome для Хабра
+    # Надеваем маску обычного пользователя Chrome
     feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     
     for url in RSS_URLS:
-        cat_id = url.split("=")[-1] 
         feed = feedparser.parse(url)
         
-        # Рентген: смотрим реальный ответ Хабра
+        # Рентген: смотрим реальный ответ
         status = getattr(feed, 'status', 'Ошибка сети/Блокировка')
         tasks_count = len(feed.entries)
-        print(f"🔎 Категория {cat_id} | Статус Хабра: {status} | Найдено задач: {tasks_count}")
+        print(f"🔎 Статус FL.ru: {status} | Найдено задач: {tasks_count}")
         
         for entry in feed.entries:
-            task_id = entry.link.split("/")[-1] 
+            # Используем саму ссылку как 100% уникальный ID для FL.ru
+            task_id = entry.link 
             
             if task_id not in processed:
                 title = entry.title
@@ -123,7 +120,7 @@ def check_freelance():
                 save_task(task_id)
                 time.sleep(2) 
 
-# Вечный двигатель (чтобы скрипт не выключался)
+# Вечный двигатель
 if __name__ == "__main__":
     while True:
         try:
