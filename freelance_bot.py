@@ -4,15 +4,15 @@ import requests
 import time
 from replicate import Client
 from dotenv import load_dotenv
-import vk_api # Подключаем библиотеку ВКонтакте
+import vk_api 
 from vk_api.utils import get_random_id
 
 # Загружаем данные из файла .env
 load_dotenv()
 
 # --- НАСТРОЙКИ ---
-VK_TOKEN = os.getenv("VK_TOKEN")           # Ключ доступа сообщества ВК
-VK_USER_ID = os.getenv("VK_USER_ID")       # Твой личный цифровой ID ВКонтакте
+VK_TOKEN = os.getenv("VK_TOKEN")           
+VK_USER_ID = os.getenv("VK_USER_ID")       
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 
 client = Client(api_token=REPLICATE_API_TOKEN)
@@ -21,12 +21,15 @@ client = Client(api_token=REPLICATE_API_TOKEN)
 vk_session = vk_api.VkApi(token=VK_TOKEN)
 vk = vk_session.get_api()
 
-# RSS-лента Хабр Фриланса
+# Расширенный список категорий Хабр Фриланса
 RSS_URLS = [
-    "https://freelance.habr.com/tasks.rss?category_id=98",  # Боты
-    "https://freelance.habr.com/tasks.rss?category_id=97"   # Скрипты
+    "https://freelance.habr.com/tasks.rss?category_id=98",  # Боты и ИИ
+    "https://freelance.habr.com/tasks.rss?category_id=97",  # Парсинг и скрипты
+    "https://freelance.habr.com/tasks.rss?category_id=113", # Интеграция API
+    "https://freelance.habr.com/tasks.rss?category_id=73"   # Бэкенд (Python/Веб)
 ]
 
+# Файл памяти, чтобы не присылать одни и те же заказы
 DB_FILE = "processed_tasks.txt"
 
 def load_processed_tasks():
@@ -46,17 +49,19 @@ def send_to_vk(text):
         vk.messages.send(
             user_id=VK_USER_ID,
             message=text,
-            random_id=get_random_id() # ВК требует уникальный ID для каждого сообщения
+            random_id=get_random_id() 
         )
     except Exception as e:
         print(f"Ошибка отправки сообщения в ВК: {e}")
 
 def analyze_and_pitch(title, description, link):
     system_prompt = (
-        "Ты — опытный разработчик ИИ-агентов и ботов. Твоя задача — проанализировать заказ на фрилансе. "
-        "Если заказ НЕ связан с разработкой ботов, интеграцией нейросетей (API, ChatGPT, LangChain) или автоматизацией, ответь строго одним словом: ИГНОР. "
-        "Если заказ подходит, напиши профессиональное, цепляющее сопроводительное письмо (питч) на русском языке. "
-        "Пиши кратко, без воды, вежливо и продающе."
+        "Ты — крутой Python-разработчик. Твой стек: боты (ВКонтакте и Telegram), FastAPI, парсинг данных, "
+        "интеграция сторонних API и работа с нейросетями (Replicate, OpenAI, генерация фото/видео/текста). "
+        "Проанализируй заказ. Если заказ можно выполнить с помощью Python, API, нейросетей или написав бота — "
+        "напиши профессиональный, вежливый и короткий отклик (питч), предложив свой стек и готовность начать. "
+        "Если заказ вообще не из нашей сферы (например: верстка HTML, дизайн логотипа в Photoshop, 1C-бухгалтерия, SEO-продвижение, копирайтинг) — "
+        "ответь строго одним словом: ИГНОР."
     )
     
     user_prompt = f"Заголовок: {title}\nОписание: {description}"
@@ -92,15 +97,18 @@ def check_freelance():
                 pitch = analyze_and_pitch(title, description, link)
                 
                 if pitch:
-                    # Текст для ВК (ВК не поддерживает Markdown так же, как Телеграм, поэтому делаем просто и чисто)
+                    # Подходит! Отправляем в ВК
                     message = (
-                        f"🚨 НАЙДЕН ЗАКАЗ ДЛЯ НАШЕГО ИИ!\n\n"
+                        f"🚨 НОВЫЙ ПОДХОДЯЩИЙ ЗАКАЗ!\n\n"
                         f"📌 {title}\n\n"
-                        f"🔗 Открыть заказ: {link}\n\n"
+                        f"🔗 Ссылка: {link}\n\n"
                         f"🤖 Готовый отклик:\n{pitch}"
                     )
                     send_to_vk(message)
-                    print(f"Нашли крутой заказ: {title}")
+                    print(f"✅ ВЗЯЛИ В РАБОТУ: {title}")
+                else:
+                    # Не подходит! Выводим в лог
+                    print(f"❌ Пропустили (не наш профиль): {title}")
                 
                 save_task(task_id)
                 time.sleep(2) 
