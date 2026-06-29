@@ -105,8 +105,8 @@ STACK_JSON = json.dumps(MY_STACK, indent=2, ensure_ascii=False)
 
 # ---------- RSS ИСТОЧНИКИ ДЛЯ ОХОТЫ ----------
 RSS_SOURCES = [
-    # Замени на реальные RSS фиды (Product Hunt AI, Hacker News и т.д.)
-    # Пример фида от rss.app: https://rss.app/feeds/...
+    "https://rss.app/feeds/tqUoZ3bIQj1g6Uzo.xml",
+    # если найдёшь ещё фиды, добавляй сюда
 ]
 # Если RSS пуст, /hunt просто вернёт сообщение. Можешь добавить позже.
 
