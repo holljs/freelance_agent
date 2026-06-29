@@ -201,23 +201,36 @@ def check_accessibility(url):
 def fetch_replicate_models(limit=20):
     url = f"https://api.replicate.com/v1/models?sort=created&order=desc&limit={limit}"
     headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}"}
-    resp = requests.get(url, headers=headers).json()
-    models = []
-    for m in resp.get("results", []):
-        owner = m["owner"]
-        name = m["name"]
-        desc = m.get("description", "")[:300]
-        models.append({
-            "id": f"{owner}/{name}",
-            "platform": "replicate",
-            "name": f"{owner}/{name}",
-            "description": desc,
-            "price_raw": "не указана",
-            "url": f"https://replicate.com/{owner}/{name}",
-            "created": m.get("created_at", "")
-        })
-    return models
-
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        print(f"[DEBUG] Replicate status: {resp.status_code}")
+        if resp.status_code != 200:
+            print(f"[ERROR] Replicate API error: {resp.text}")
+            return []
+        data = resp.json()
+        if not isinstance(data, dict) or "results" not in data:
+            print(f"[ERROR] Unexpected Replicate response: {data}")
+            return []
+        models = []
+        for m in data["results"]:
+            owner = m.get("owner", "unknown")
+            name = m.get("name", "unknown")
+            desc = m.get("description", "")[:300]
+            models.append({
+                "id": f"{owner}/{name}",
+                "platform": "replicate",
+                "name": f"{owner}/{name}",
+                "description": desc,
+                "price_raw": "не указана",
+                "url": f"https://replicate.com/{owner}/{name}",
+                "created": m.get("created_at", "")
+            })
+        print(f"[DEBUG] Replicate models fetched: {len(models)}")
+        return models
+    except Exception as e:
+        print(f"[ERROR] Replicate fetch exception: {e}")
+        return []
+        
 def fetch_modelscope_models(limit=20):
     url = "https://modelscope.cn/api/v1/models"
     params = {
