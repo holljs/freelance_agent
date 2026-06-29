@@ -270,7 +270,48 @@ def fetch_modelscope_models(limit=20):
         print(f"ModelScope fetch error: {e}")
         return []
 
+def fetch_siliconflow_models(limit=20):
+    url = "https://api.siliconflow.cn/v1/models"
+    sf_token = os.getenv("SILICONFLOW_API_TOKEN")
+    
+    if not sf_token:
+        print("[ERROR] SILICONFLOW_API_TOKEN не найден в .env")
+        return []
+        
+    headers = {"Authorization": f"Bearer {sf_token}"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        print(f"[DEBUG] SiliconFlow status: {resp.status_code}")
+        
+        if resp.status_code != 200:
+            print(f"[ERROR] SiliconFlow API error: {resp.text}")
+            return []
+            
+        data = resp.json()
+        if not isinstance(data, dict) or "data" not in data:
+            print(f"[ERROR] Unexpected SiliconFlow response: {data}")
+            return []
+            
+        models = []
+        for m in data["data"][:limit]:
+            m_id = m.get("id", "unknown")
+            models.append({
+                "id": m_id,
+                "platform": "siliconflow",
+                "name": m_id,
+                "description": f"Модель на китайском API-хабе. Тип: {m.get('object', 'model')}",
+                "price_raw": "Цены в юанях/долларах (демпинг)",
+                "url": "https://www.siliconflow.com/models",
+                "created": ""
+            })
+        print(f"[DEBUG] SiliconFlow models fetched successfully: {len(models)}")
+        return models
+    except Exception as e:
+        print(f"[ERROR] SiliconFlow fetch exception: {e}")
+        return []
+
 # ---------- СРАВНЕНИЕ МОДЕЛЕЙ ----------
+def compare_models(models, peer_id):
 def compare_models(models, peer_id):
     found = 0
     for model in models:
@@ -319,6 +360,8 @@ def handle_command(peer_id, text):
             models = fetch_replicate_models()
         elif platform == "modelscope":
             models = fetch_modelscope_models()
+        elif platform == "siliconflow":  # <-- Добавили проверку на Китай
+            models = fetch_siliconflow_models()
         else:
             models = []
             send_message(peer_id, "Платформа не поддерживается или не найдена.")
