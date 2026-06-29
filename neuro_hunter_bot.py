@@ -105,8 +105,17 @@ STACK_JSON = json.dumps(MY_STACK, indent=2, ensure_ascii=False)
 
 # ---------- RSS ИСТОЧНИКИ ДЛЯ ОХОТЫ ----------
 RSS_SOURCES = [
-    "https://rss.app/r/feed/3SjsAcBiS4i4TxPp",
-    # если найдёшь ещё фиды, добавляй сюда
+    # 1. Главный мировой хаб open-source моделей (анонсы, релизы, китайские модели)
+    "https://huggingface.co/blog/feed.xml",
+    
+    # 2. Крупный агрегатор новостей ИИ, моделей и новых инструментов (MarkTechPost)
+    "https://www.marktechpost.com/feed/",
+    
+    # 3. Мировые технологические ИИ-новости (Artificial Intelligence News)
+    "https://www.artificialintelligence-news.com/feed/",
+    
+    # 4. Твой текущий фид (оставляем для кучи)
+    "https://rss.app/r/feed/3SjsAcBiS4i4TxPp"
 ]
 # Если RSS пуст, /hunt просто вернёт сообщение. Можешь добавить позже.
 
@@ -147,10 +156,11 @@ def ask_gpt(system_prompt, user_prompt, max_tokens=800):
 def hunt_marketplaces():
     results = []
     system_prompt = (
-        "Ты — скаут AI-платформ. Определи по заголовку и описанию новости, "
-        "является ли она анонсом облачного сервиса/маркетплейса для запуска ИИ-моделей "
-        "через API (как Replicate). Ответь СТРОГО в JSON: "
-        '{"is_marketplace": true/false, "name": "...", "url": "...", "reason": "..."}.'
+        "Ты — скаут AI-платформ. Анализируй новости ИИ. Мы ищем новые облачные сервисы, "
+        "китайские или российские маркетплейсы моделей, новые API-хабы (аналоги Replicate/OpenRouter), "
+        "которые работают без VPN и предоставляют доступ к генерации фото, видео, тексту или музыке. "
+        "Ответь СТРОГО в формате JSON без лишнего текста: "
+        '{"is_marketplace": true/false, "name": "название сервиса", "url": "ссылка", "reason": "чем полезен и какие модели есть"}.'
     )
     for rss_url in RSS_SOURCES:
         try:
