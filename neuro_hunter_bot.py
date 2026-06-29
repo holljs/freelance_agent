@@ -271,25 +271,30 @@ def fetch_modelscope_models(limit=20):
         return []
 
 def fetch_siliconflow_models(limit=20):
-    url = "https://api.siliconflow.cn/v1/models"
+    # Поменяли на стабильный международный домен .com
+    url = "https://api.siliconflow.com/v1/models"
     sf_token = os.getenv("SILICONFLOW_API_TOKEN")
     
     if not sf_token:
         print("[ERROR] SILICONFLOW_API_TOKEN не найден в .env")
         return []
         
-    headers = {"Authorization": f"Bearer {sf_token}"}
+    # Добавили обязательный заголовок "accept"
+    headers = {
+        "Authorization": f"Bearer {sf_token}",
+        "accept": "application/json"
+    }
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         print(f"[DEBUG] SiliconFlow status: {resp.status_code}")
         
         if resp.status_code != 200:
-            print(f"[ERROR] SiliconFlow API error: {resp.text}")
+            print(f"[ERROR] SiliconFlow API error text: {resp.text}")
             return []
             
         data = resp.json()
         if not isinstance(data, dict) or "data" not in data:
-            print(f"[ERROR] Unexpected SiliconFlow response: {data}")
+            print(f"[ERROR] Unexpected SiliconFlow structure: {data}")
             return []
             
         models = []
@@ -300,7 +305,7 @@ def fetch_siliconflow_models(limit=20):
                 "platform": "siliconflow",
                 "name": m_id,
                 "description": f"Модель на китайском API-хабе. Тип: {m.get('object', 'model')}",
-                "price_raw": "Цены в юанях/долларах (демпинг)",
+                "price_raw": "Цены в юанях/долларах (жесткий демпинг)",
                 "url": "https://www.siliconflow.com/models",
                 "created": ""
             })
