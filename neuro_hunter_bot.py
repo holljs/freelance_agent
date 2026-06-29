@@ -66,7 +66,7 @@ MY_STACK = {
         "category": "image"
     },
     "gpt-image-2": {
-        "model": "gpt-image-2",   # Уточни точный model_id на Replicate, если есть
+        "model": "openai/gpt-image-2",   # Уточни точный model_id на Replicate, если есть
         "price": 0.004,
         "category": "image"
     },
