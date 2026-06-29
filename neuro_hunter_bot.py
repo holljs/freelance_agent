@@ -103,19 +103,11 @@ MY_STACK = {
 }
 STACK_JSON = json.dumps(MY_STACK, indent=2, ensure_ascii=False)
 
-# ---------- RSS ИСТОЧНИКИ ДЛЯ ОХОТЫ ----------
+# ---------- ОБНОВЛЕННЫЕ ИСТОЧНИКИ ДЛЯ РФ/КИТАЙ ОХОТЫ ----------
 RSS_SOURCES = [
-    # 1. Главный мировой хаб open-source моделей (анонсы, релизы, китайские модели)
-    "https://huggingface.co/blog/feed.xml",
-    
-    # 2. Крупный агрегатор новостей ИИ, моделей и новых инструментов (MarkTechPost)
-    "https://www.marktechpost.com/feed/",
-    
-    # 3. Мировые технологические ИИ-новости (Artificial Intelligence News)
-    "https://www.artificialintelligence-news.com/feed/",
-    
-    # 4. Твой текущий фид (оставляем для кучи)
-    "https://rss.app/r/feed/3SjsAcBiS4i4TxPp"
+    "https://habr.com/ru/rss/hub/artificial_intelligence/all/", # Главный ИИ-хаб на Хабре
+    "https://vc.ru/rss/crypto",                                 # Технологии и ИИ на VC
+    "https://huggingface.co/blog/feed.xml",                     # Мировые опенсорс релизы
 ]
 # Если RSS пуст, /hunt просто вернёт сообщение. Можешь добавить позже.
 
