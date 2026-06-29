@@ -323,14 +323,13 @@ def compare_models(models, peer_id):
         if cursor.fetchone():
             continue
 
-        system_prompt = f"""Ты — AI-скаут и аналитик. У нас есть текущий стек моделей:
-{STACK_JSON}
+        system_prompt = f"""Ты — крутой AI-скаут. У нас есть стек моделей: {STACK_JSON}
+Проанализируй модель с китайского хаба SiliconFlow.
+Нам интересны:
+1. КАРТИНКИ И ВИДЕО: Любые модели со словами 'flux', 'wan', 'sdxl', 'hunyuan', 'video', 'image-edit'.
+2. ТЕКСТ И ЧАТ: Модели со словами 'deepseek', 'gpt-4o', 'llama-3', 'qwen' (если это текстовая модель, напиши, что она заменит Бро и Gemini, а не картиночный qwen-edit).
 
-Проанализируй модель с китайской платформы SiliconFlow. 
-Если эта модель совпадает по названию или архитектуре с нашими (например: содержит 'flux', 'wan', 'qwen', 'deepseek', 'gpt'), выдай краткую рекомендацию на русском языке. 
-Напиши, что на SiliconFlow эта модель доступна БЕЗ VPN и стоит в среднем в 2 раза дешевле, чем на Replicate, поэтому её выгодно протестировать для наших 'Цехов'.
-
-Если модель вообще не из нашей оперы (мелкий кастом или непонятный скрипт), ответь строго одним словом: ИГНОР."""
+Если модель подходит под эти категории, напиши сочную рекомендацию на русском языке: что это, доступна ли БЕЗ VPN и насколько она дешевле Replicate. Если это мелкий мусор, пиши строго: ИГНОР."""
 
         user_prompt = f"Модель: {model['name']} ({model['platform']})\nОписание: {model['description']}\nЦена: {model['price_raw']}\nСсылка: {model['url']}"
 
@@ -364,8 +363,8 @@ def handle_command(peer_id, text):
             models = fetch_replicate_models()
         elif platform == "modelscope":
             models = fetch_modelscope_models()
-        elif platform == "siliconflow":  # <-- Добавили проверку на Китай
-            models = fetch_siliconflow_models()
+        elif platform == "siliconflow":  # <-- Передаем лимит 100 моделей
+            models = fetch_siliconflow_models(limit=100)
         else:
             models = []
             send_message(peer_id, "Платформа не поддерживается или не найдена.")
