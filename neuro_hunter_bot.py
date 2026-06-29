@@ -20,18 +20,17 @@ REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 # Клиент Replicate
 rep_client = Client(api_token=REPLICATE_API_TOKEN)
 
-# База данных SQLite для хранения найденных маркетплейсов и обработанных моделей
+# База данных SQLite
 DB_FILE = "neuro_hunter.db"
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 cursor = conn.cursor()
 
-# Создаём таблицы, если их нет
 cursor.executescript("""
 CREATE TABLE IF NOT EXISTS marketplaces (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE,
     url TEXT,
-    accessible INTEGER DEFAULT 0,  -- 0=неизвестно, 1=да, -1=нет
+    accessible INTEGER DEFAULT 0,
     payment_info TEXT,
     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -44,47 +43,79 @@ CREATE TABLE IF NOT EXISTS scanned_models (
 """)
 conn.commit()
 
-# ---------- ТЕКУЩИЙ СТЕК (эталон) ----------
+# ---------- ТЕКУЩИЙ СТЕК (ВСЕ ТВОИ МОДЕЛИ) ----------
 MY_STACK = {
-    "image": {
+    "hyper-flux-8step": {
         "model": "bytedance/hyper-flux-8step",
-        "price": 0.003,  # примерная цена в USD за генерацию
+        "price": 0.003,          # примерная цена в USD
         "category": "image"
     },
-    "text": {
-        "model": "openai/gpt-4o-mini",
-        "price": 0.00015,  # за 1K токенов (условно)
-        "category": "text"
+    "qwen-image-edit": {
+        "model": "qwen/qwen-image-edit-2511",
+        "price": 0.004,
+        "category": "image_edit"
     },
-    "music": {
-        "model": "minimax/music-1.5",
-        "price": 0.01,
-        "category": "audio"
+    "nano-banana": {
+        "model": "google/nano-banana",
+        "price": 0.002,
+        "category": "image"
     },
-    "video": {
+    "nano-banana-2": {
+        "model": "google/nano-banana-2",
+        "price": 0.0025,
+        "category": "image"
+    },
+    "gpt-image-2": {
+        "model": "gpt-image-2",   # Уточни точный model_id на Replicate, если есть
+        "price": 0.004,
+        "category": "image"
+    },
+    "wan-i2v-fast": {
         "model": "wan-video/wan-2.2-i2v-fast",
         "price": 0.02,
         "category": "video"
+    },
+    "wan-t2v-fast": {
+        "model": "wan-video/wan-2.2-t2v-fast",
+        "price": 0.015,
+        "category": "video"
+    },
+    "wan-animate-replace": {
+        "model": "wan-video/wan-2.2-animate-replace",
+        "price": 0.025,
+        "category": "video"
+    },
+    "wan-s2v": {
+        "model": "wan-video/wan-2.2-s2v",
+        "price": 0.03,
+        "category": "video"
+    },
+    "gpt4o-mini": {
+        "model": "openai/gpt-4o-mini",
+        "price": 0.00015,
+        "category": "text"
+    },
+    "music-1.5": {
+        "model": "minimax/music-1.5",
+        "price": 0.01,
+        "category": "audio"
     }
 }
-# Для GPT-анализа превращаем в читаемый JSON
 STACK_JSON = json.dumps(MY_STACK, indent=2, ensure_ascii=False)
 
-# ---------- ИСТОЧНИКИ RSS ДЛЯ ОХОТЫ ----------
+# ---------- RSS ИСТОЧНИКИ ДЛЯ ОХОТЫ ----------
 RSS_SOURCES = [
-    "https://rss.app/feeds/tqUoZ3bIQj1g6Uzo.xml",  # Product Hunt AI (пример, лучше подставить свой)
-    "https://hnrss.org/newest?q=AI+model+hosting+marketplace",
-    "https://github.com/trending/python?since=daily",  # опционально
+    # Замени на реальные RSS фиды (Product Hunt AI, Hacker News и т.д.)
+    # Пример фида от rss.app: https://rss.app/feeds/...
 ]
-# Для быстрого старта можно оставить пустым, тогда hunt будет работать только по явному запросу
+# Если RSS пуст, /hunt просто вернёт сообщение. Можешь добавить позже.
 
-# ---------- VK БОТ НА LONG POLL ----------
+# ---------- VK БОТ LONG POLL ----------
 vk_session = VkApi(token=VK_TOKEN)
 vk = vk_session.get_api()
 longpoll = VkBotLongPoll(vk_session, group_id=GROUP_ID)
 
 def send_message(peer_id, text):
-    """Отправка сообщения в ВК"""
     try:
         vk.messages.send(
             peer_id=peer_id,
@@ -95,9 +126,8 @@ def send_message(peer_id, text):
     except Exception as e:
         print(f"Ошибка отправки: {e}")
 
-# ---------- ФУНКЦИИ ДЛЯ GPT-4O-MINI ----------
+# ---------- GPT-4O-MINI ОБЁРТКА ----------
 def ask_gpt(system_prompt, user_prompt, max_tokens=800):
-    """Обёртка вызова Replicate GPT-4o-mini"""
     try:
         output = rep_client.run(
             "openai/gpt-4o-mini",
@@ -115,28 +145,24 @@ def ask_gpt(system_prompt, user_prompt, max_tokens=800):
 
 # ---------- ОХОТА ЗА МАРКЕТПЛЕЙСАМИ ----------
 def hunt_marketplaces():
-    """Сканирует RSS, просит GPT найти упоминания новых AI-маркетплейсов, проверяет доступность."""
     results = []
     system_prompt = (
-        "Ты — скаут AI-платформ. Получаешь заголовок и описание новости. "
-        "Определи, является ли она анонсом новой облачной платформы/маркетплейса, "
-        "позволяющей запускать ИИ-модели через API (как Replicate). "
-        "Ответь СТРОГО в JSON: {\"is_marketplace\": true/false, \"name\": \"название\", \"url\": \"ссылка\", \"reason\": \"...\"}. "
-        "Учитывай, что платформа должна предоставлять serverless inference для чужих моделей."
+        "Ты — скаут AI-платформ. Определи по заголовку и описанию новости, "
+        "является ли она анонсом облачного сервиса/маркетплейса для запуска ИИ-моделей "
+        "через API (как Replicate). Ответь СТРОГО в JSON: "
+        '{"is_marketplace": true/false, "name": "...", "url": "...", "reason": "..."}.'
     )
     for rss_url in RSS_SOURCES:
         try:
             feed = feedparser.parse(rss_url)
-            for entry in feed.entries[:10]:  # анализируем 10 свежих новостей
+            for entry in feed.entries[:10]:
                 title = entry.get("title", "")
                 desc = entry.get("description", "")[:500]
                 link = entry.get("link", "")
-                # Спрашиваем GPT
                 answer = ask_gpt(system_prompt, f"Заголовок: {title}\nОписание: {desc}\nСсылка: {link}")
                 if not answer:
                     continue
                 try:
-                    # Ожидаем JSON, иногда GPT отвечает с обрамлением
                     if "{" in answer:
                         json_str = answer[answer.find("{"):answer.rfind("}")+1]
                         info = json.loads(json_str)
@@ -148,9 +174,7 @@ def hunt_marketplaces():
                 if info.get("is_marketplace"):
                     name = info.get("name", "Безымянный")
                     url = info.get("url", link)
-                    # Проверяем доступность
                     accessible = check_accessibility(url)
-                    # Сохраняем в БД, если нет
                     cursor.execute("SELECT id FROM marketplaces WHERE url=?", (url,))
                     if not cursor.fetchone():
                         cursor.execute(
@@ -160,24 +184,22 @@ def hunt_marketplaces():
                         conn.commit()
                         results.append(f"🔍 {name}\n🔗 {url}\n📡 Доступ из РФ: {'Да' if accessible else 'Нет'}\n💳 Оплата: проверь вручную")
         except Exception as e:
-            print(f"Ошибка обработки RSS {rss_url}: {e}")
+            print(f"Ошибка RSS {rss_url}: {e}")
             continue
     if not results:
-        return "Новых маркетплейсов не обнаружено. Можешь добавить RSS источники в настройки бота."
+        return "Новых маркетплейсов не обнаружено. Добавь RSS источники или пришли ссылку вручную."
     return "🕵️ Найдены потенциальные маркетплейсы:\n\n" + "\n\n".join(results)
 
 def check_accessibility(url):
-    """Простая проверка, что сайт открывается (без VPN)."""
     try:
         resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         return resp.status_code == 200
     except:
         return False
 
-# ---------- СБОР МОДЕЛЕЙ С ПЛАТФОРМ ----------
+# ---------- СБОР МОДЕЛЕЙ ----------
 def fetch_replicate_models(limit=20):
-    """Получает последние модели с Replicate."""
-    url = "https://api.replicate.com/v1/models?sort=created&order=desc&limit=" + str(limit)
+    url = f"https://api.replicate.com/v1/models?sort=created&order=desc&limit={limit}"
     headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}"}
     resp = requests.get(url, headers=headers).json()
     models = []
@@ -185,21 +207,18 @@ def fetch_replicate_models(limit=20):
         owner = m["owner"]
         name = m["name"]
         desc = m.get("description", "")[:300]
-        price_raw = "не указана"
-        # Иногда цена есть в description, попробуем выудить
         models.append({
             "id": f"{owner}/{name}",
             "platform": "replicate",
             "name": f"{owner}/{name}",
             "description": desc,
-            "price_raw": price_raw,
+            "price_raw": "не указана",
             "url": f"https://replicate.com/{owner}/{name}",
             "created": m.get("created_at", "")
         })
     return models
 
 def fetch_modelscope_models(limit=20):
-    """ModelScope (Китай) – публичный API списка моделей."""
     url = "https://modelscope.cn/api/v1/models"
     params = {
         "PageSize": limit,
@@ -230,22 +249,21 @@ def fetch_modelscope_models(limit=20):
 
 # ---------- СРАВНЕНИЕ МОДЕЛЕЙ ----------
 def compare_models(models, peer_id):
-    """Прогоняет каждую модель через GPT, сравнивая с текущим стеком."""
     found = 0
     for model in models:
-        # Пропускаем, если уже уведомляли (защита от повторов)
         cursor.execute("SELECT model_id FROM scanned_models WHERE model_id=?", (model["id"],))
         if cursor.fetchone():
             continue
 
-        system_prompt = f"""Ты — AI-аналитик. У нас есть текущий стек моделей и их цены:
+        system_prompt = f"""Ты — AI-аналитик. У нас есть следующий стек моделей и их примерные цены (USD):
 {STACK_JSON}
 
-Проанализируй новую модель. Если она **дешевле** при сопоставимом качестве, или **значительно лучше** (по описанию) при сравнимой цене, дай краткую рекомендацию заменить, с указанием цены и ссылки. 
-Если цена не указана, предположи её из описания (обычно пишут "$X.XXXX per image"). 
-Если модель не подходит или дороже/хуже, ответь СТРОГО "ИГНОР". 
+Проанализируй новую модель. Если она **дешевле** при сопоставимом качестве или **значительно лучше** при сравнимой цене, дай краткую рекомендацию заменить (2-3 предложения) с ценой и ссылкой.
+Если модель — новая версия одной из наших (например, nano-banana-3 или GPT-IMAGE-3), обязательно скажи об этом.
+Если цена не указана, предположи её из описания.
+Если модель не подходит, ответь строго "ИГНОР".
 Формат ответа (если не игнор): <текст рекомендации>"""
-        
+
         user_prompt = f"Модель: {model['name']} ({model['platform']})\nОписание: {model['description']}\nЦена: {model['price_raw']}\nСсылка: {model['url']}"
 
         response = ask_gpt(system_prompt, user_prompt, max_tokens=500)
@@ -255,15 +273,14 @@ def compare_models(models, peer_id):
         if "ИГНОР" not in response:
             message = f"🔥 Новая модель достойна замены!\n{model['name']}\n{response}\n🔗 {model['url']}"
             send_message(peer_id, message)
-            # Помечаем как обработанную
             cursor.execute("INSERT OR IGNORE INTO scanned_models (model_id, platform) VALUES (?,?)",
                            (model["id"], model["platform"]))
             conn.commit()
             found += 1
-            time.sleep(1)  # небольшая пауза
+            time.sleep(1)
     return found
 
-# ---------- ОБРАБОТЧИК КОМАНД ----------
+# ---------- ОБРАБОТКА КОМАНД ----------
 def handle_command(peer_id, text):
     text = text.strip().lower()
     if text.startswith("/hunt"):
@@ -280,7 +297,6 @@ def handle_command(peer_id, text):
         elif platform == "modelscope":
             models = fetch_modelscope_models()
         else:
-            # Можно добавить вызов custom из найденных маркетплейсов
             models = []
             send_message(peer_id, "Платформа не поддерживается или не найдена.")
         if models:
@@ -322,13 +338,13 @@ def main():
         if event.type == VkBotEventType.MESSAGE_NEW:
             msg_obj = event.obj.message
             text = msg_obj.get('text', '')
-            peer_id = msg_obj.get('peer_id')  # работа с беседами и личкой
+            peer_id = msg_obj.get('peer_id')
             if text:
                 try:
                     handle_command(peer_id, text)
                 except Exception as e:
-                    print(f"Ошибка обработки: {e}")
-                    send_message(peer_id, f"⚠️ Произошла ошибка: {e}")
+                    print(f"Ошибка: {e}")
+                    send_message(peer_id, f"⚠️ Ошибка: {e}")
 
 if __name__ == "__main__":
     main()
