@@ -312,7 +312,6 @@ def fetch_siliconflow_models(limit=20):
 
 # ---------- СРАВНЕНИЕ МОДЕЛЕЙ ----------
 def compare_models(models, peer_id):
-def compare_models(models, peer_id):
     found = 0
     for model in models:
         cursor.execute("SELECT model_id FROM scanned_models WHERE model_id=?", (model["id"],))
