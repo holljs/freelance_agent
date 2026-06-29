@@ -105,8 +105,7 @@ STACK_JSON = json.dumps(MY_STACK, indent=2, ensure_ascii=False)
 
 # ---------- RSS ИСТОЧНИКИ ДЛЯ ОХОТЫ ----------
 RSS_SOURCES = [
-    "https://hnrss.org/newest?q=AI+model+marketplace+API+inference&count=10",
-    "https://hnrss.org/newest?q=serverless+GPU+model+hosting&count=10",
+    "https://rss.app/r/feed/3SjsAcBiS4i4TxPp",
     # если найдёшь ещё фиды, добавляй сюда
 ]
 # Если RSS пуст, /hunt просто вернёт сообщение. Можешь добавить позже.
