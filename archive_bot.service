@@ -1,0 +1,140 @@
+import os
+import requests
+import time
+from dotenv import load_dotenv
+import vk_api 
+from vk_api.utils import get_random_id
+
+# Загружаем данные из файла .env
+load_dotenv()
+
+# --- НАСТРОЙКИ ---
+VK_TOKEN = os.getenv("VK_TOKEN")           
+VK_USER_ID = os.getenv("VK_USER_ID")       
+SILICONFLOW_API_TOKEN = os.getenv("SILICONFLOW_API_TOKEN")
+
+# Искомая фамилия (можно добавить несколько через цикл)
+TARGET_SURNAME = "Иванов" # ЗАМЕНИТЕ НА ФАМИЛИЮ ПРАДЕДА
+
+# Авторизуем бота в ВК
+vk_session = vk_api.VkApi(token=VK_TOKEN)
+vk = vk_session.get_api()
+
+DB_FILE = "processed_persons.txt"
+
+def load_processed():
+    try:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            return set(f.read().splitlines())
+    except FileNotFoundError:
+        return set()
+
+def save_person(person_id):
+    with open(DB_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{person_id}\n")
+
+# --- ОТПРАВКА В ВК ---
+def send_to_vk(text):
+    try:
+        vk.messages.send(
+            user_id=VK_USER_ID,
+            message=text,
+            random_id=get_random_id() 
+        )
+    except Exception as e:
+        print(f"Ошибка отправки в ВК: {e}")
+
+# --- АНАЛИЗ ЧЕРЕЗ DEEPSEEK ---
+def analyze_biography(name, snippet):
+    if not SILICONFLOW_API_TOKEN:
+        print("⚠️ Ошибка: SILICONFLOW_API_TOKEN не найден")
+        return None
+
+    system_prompt = (
+        "Ты — историк-генеалог. Я ищу своего прадеда. Известно: "
+        "Жил на Урале, был краснодеревщиком (или столяром/зажиточным мастером). "
+        "Был раскулачен и расстрелян. Его жена с тремя детьми позже уехала в Коломну. "
+        "Проанализируй справку на человека. Если есть пересечения по региону (Урал, Свердловская, Пермская, Челябинская обл.), "
+        "по факту раскулачивания/расстрела или профессии — напиши краткое саммари, почему он может нам подойти. "
+        "Если это точно другой человек (например, родился в Москве, другой конец страны, другие обстоятельства) — "
+        "ответь строго одним словом: ИГНОР."
+    )
+    
+    url = "https://api.siliconflow.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {SILICONFLOW_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "deepseek-ai/DeepSeek-V3", 
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Имя: {name}\nСправка: {snippet}"}
+        ],
+        "max_tokens": 400,
+        "temperature": 0.3
+    }
+
+    for attempt in range(3):
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            if response.status_code == 200:
+                answer = response.json()["choices"][0]["message"]["content"].strip()
+                if "ИГНОР" in answer:
+                    return None
+                return answer
+        except Exception as e:
+            print(f"⚠️ Ошибка сети на попытке {attempt + 1}: {e}")
+        time.sleep(2)
+        
+    return None
+
+# --- ПАРСИНГ ОТКРЫТОГО СПИСКА ---
+def check_archives():
+    print(f"\nИщу совпадения по фамилии {TARGET_SURNAME} в Открытом списке...")
+    processed = load_processed()
+    
+    # API MediaWiki для поиска по сайту
+    url = f"https://ru.openlist.wiki/api.php?action=query&list=search&srsearch={TARGET_SURNAME}&utf8=&format=json&srlimit=50"
+    
+    try:
+        response = requests.get(url, timeout=15)
+        data = response.json()
+        search_results = data.get("query", {}).get("search", [])
+        
+        print(f"🔎 Найдено записей: {len(search_results)}")
+        
+        for person in search_results:
+            page_id = str(person["pageid"])
+            name = person["title"]
+            snippet = person["snippet"] # Краткая выжимка из статьи с HTML-тегами
+            
+            # Убираем HTML теги из сниппета для чистоты
+            clean_snippet = snippet.replace('<span class="searchmatch">', '').replace('</span>', '')
+            
+            if page_id not in processed:
+                print(f"Анализирую: {name}...")
+                analysis = analyze_biography(name, clean_snippet)
+                
+                if analysis:
+                    link = f"https://ru.openlist.wiki/{name.replace(' ', '_')}"
+                    message = (
+                        f"🚨 НАЙДЕНО ВОЗМОЖНОЕ СОВПАДЕНИЕ В АРХИВАХ!\n\n"
+                        f"📌 {name}\n\n"
+                        f"🔗 Ссылка: {link}\n\n"
+                        f"🤖 Вывод нейросети:\n{analysis}"
+                    )
+                    send_to_vk(message)
+                    print(f"✅ ОТПРАВЛЕНО В ВК: {name}")
+                else:
+                    print(f"❌ Не подошел: {name}")
+                
+                save_person(page_id)
+                time.sleep(1) # Пауза между запросами к нейросети
+                
+    except Exception as e:
+        print(f"Ошибка при запросе к API: {e}")
+
+if __name__ == "__main__":
+    check_archives()
