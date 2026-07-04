@@ -96,7 +96,6 @@ def check_archives():
     
     url = "https://ru.openlist.wiki/api.php"
     
-    # Правильный способ передачи русских букв без поломки кодировки!
     params = {
         "action": "query",
         "list": "search",
