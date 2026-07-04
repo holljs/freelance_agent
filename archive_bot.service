@@ -1,6 +1,7 @@
 import os
 import requests
 import time
+import urllib.parse
 from dotenv import load_dotenv
 import vk_api 
 from vk_api.utils import get_random_id
@@ -102,8 +103,11 @@ def check_archives():
     print(f"\nИщу совпадения по фамилии {TARGET_SURNAME} в Открытом списке...")
     processed = load_processed()
     
-    # API MediaWiki
-    url = f"https://ru.openlist.wiki/api.php?action=query&list=search&srsearch={TARGET_SURNAME}&utf8=&format=json&srlimit=500"
+    # Кодируем кириллицу для правильного URL-запроса
+    encoded_surname = urllib.parse.quote(TARGET_SURNAME)
+    
+    # API MediaWiki с закодированной фамилией
+    url = f"https://ru.openlist.wiki/api.php?action=query&list=search&srsearch={encoded_surname}&utf8=&format=json&srlimit=500"
     
     try:
         response = requests.get(url, timeout=15)
@@ -143,4 +147,7 @@ def check_archives():
         print(f"Ошибка при запросе к API: {e}")
 
 if __name__ == "__main__":
-    check_archives()
+    while True:
+        check_archives()
+        print("✅ Поиск завершен. Ухожу в спячку на 24 часа...")
+        time.sleep(86400) # Сон на сутки
