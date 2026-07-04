@@ -52,6 +52,12 @@ def send_to_vk(text):
         print(f"Ошибка отправки сообщения в ВК: {e}")
 
 def analyze_and_pitch(title, description, link):
+    # Достаем токен из окружения
+    SILICONFLOW_API_TOKEN = os.getenv("SILICONFLOW_API_TOKEN")
+    if not SILICONFLOW_API_TOKEN:
+        print("⚠️ Ошибка: SILICONFLOW_API_TOKEN не найден в .env")
+        return None
+
     system_prompt = (
         "Ты — крутой Python-разработчик. Твой стек: боты (ВКонтакте и Telegram), FastAPI, парсинг данных, "
         "интеграция сторонних API и работа с нейросетями (Replicate, OpenAI, генерация фото/видео/текста). "
@@ -61,21 +67,40 @@ def analyze_and_pitch(title, description, link):
         "ответь строго одним словом: ИГНОР."
     )
     
-    user_prompt = f"Заголовок: {title}\nОписание: {description}"
+    url = "https://api.siliconflow.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {SILICONFLOW_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
     
-    output = client.run(
-        "openai/gpt-4o-mini",
-        input={
-            "prompt": user_prompt,
-            "system_prompt": system_prompt,
-            "max_tokens": 1000
-        }
-    )
-    response = "".join(output).strip()
-    
-    if "ИГНОР" in response:
-        return None
-    return response
+    payload = {
+        "model": "deepseek-ai/DeepSeek-V3",  # 🔥 Заменили на копеечный DeepSeek!
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Заголовок: {title}\nОписание: {description}"}
+        ],
+        "max_tokens": 600,
+        "temperature": 0.5
+    }
+
+    # 3 попытки достучаться до Китая, если упадет сеть
+    for attempt in range(3):
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            if response.status_code == 200:
+                res_json = response.json()
+                answer = res_json["choices"][0]["message"]["content"].strip()
+                
+                if "ИГНОР" in answer:
+                    return None
+                return answer
+            else:
+                print(f"⚠️ SiliconFlow вернул статус {response.status_code}: {response.text}")
+        except Exception as e:
+            print(f"⚠️ Ошибка сети на попытке {attempt + 1}: {e}")
+        time.sleep(2)
+        
+    return None
 
 def check_freelance():
     print("\nПроверяю биржу FL.ru...")
