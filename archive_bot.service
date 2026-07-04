@@ -13,8 +13,8 @@ VK_TOKEN = os.getenv("VK_TOKEN")
 VK_USER_ID = os.getenv("VK_USER_ID")       
 SILICONFLOW_API_TOKEN = os.getenv("SILICONFLOW_API_TOKEN")
 
-# Искомая фамилия (можно добавить несколько через цикл)
-TARGET_SURNAME = "Иванов" # ЗАМЕНИТЕ НА ФАМИЛИЮ ПРАДЕДА
+# Ищем по фамилии
+TARGET_SURNAME = "Чукавин"
 
 # Авторизуем бота в ВК
 vk_session = vk_api.VkApi(token=VK_TOKEN)
@@ -50,14 +50,21 @@ def analyze_biography(name, snippet):
         print("⚠️ Ошибка: SILICONFLOW_API_TOKEN не найден")
         return None
 
+    # Обновленный промпт с точными данными вашей семьи
     system_prompt = (
-        "Ты — историк-генеалог. Я ищу своего прадеда. Известно: "
-        "Жил на Урале, был краснодеревщиком (или столяром/зажиточным мастером). "
-        "Был раскулачен и расстрелян. Его жена с тремя детьми позже уехала в Коломну. "
-        "Проанализируй справку на человека. Если есть пересечения по региону (Урал, Свердловская, Пермская, Челябинская обл.), "
-        "по факту раскулачивания/расстрела или профессии — напиши краткое саммари, почему он может нам подойти. "
-        "Если это точно другой человек (например, родился в Москве, другой конец страны, другие обстоятельства) — "
-        "ответь строго одним словом: ИГНОР."
+        "Ты — профессиональный историк-архивист. Твоя цель — найти информацию о прадеде пользователя.\n"
+        "Вот точные вводные данные:\n"
+        "1. ФИО: Чукавин Иван (отчество пока неизвестно).\n"
+        "2. Место: город Воткинск (Удмуртия) или соседние районы Урала/Прикамья.\n"
+        "3. Профессия: краснодеревщик, столяр, зажиточный мастер.\n"
+        "4. Судьба: раскулачен во время революции/коллективизации и расстрелян.\n"
+        "5. Семья: жена Мария. Трое детей: дочь Валентина Ивановна (бабушка пользователя) и два сына. "
+        "После расстрела жена с детьми бежала в Коломну.\n\n"
+        "Проанализируй архивную справку. Если человек подходит под описание Ивана Чукавина из Воткинска/Удмуртии, "
+        "ИЛИ если это кто-то из его вероятных родственников из этого же региона (например, другие Чукавины из Воткинска, подвергшиеся репрессиям), "
+        "напиши краткое, четкое саммари, почему это дело стоит запросить в архиве.\n"
+        "Если совпадений по региону нет (например, это Чукавин из Москвы или Сибири), "
+        "или это человек, родившийся сильно позже — ответь строго одним словом: ИГНОР."
     )
     
     url = "https://api.siliconflow.com/v1/chat/completions"
@@ -72,8 +79,8 @@ def analyze_biography(name, snippet):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Имя: {name}\nСправка: {snippet}"}
         ],
-        "max_tokens": 400,
-        "temperature": 0.3
+        "max_tokens": 500,
+        "temperature": 0.2
     }
 
     for attempt in range(3):
@@ -95,22 +102,21 @@ def check_archives():
     print(f"\nИщу совпадения по фамилии {TARGET_SURNAME} в Открытом списке...")
     processed = load_processed()
     
-    # API MediaWiki для поиска по сайту
-    url = f"https://ru.openlist.wiki/api.php?action=query&list=search&srsearch={TARGET_SURNAME}&utf8=&format=json&srlimit=50"
+    # API MediaWiki
+    url = f"https://ru.openlist.wiki/api.php?action=query&list=search&srsearch={TARGET_SURNAME}&utf8=&format=json&srlimit=500"
     
     try:
         response = requests.get(url, timeout=15)
         data = response.json()
         search_results = data.get("query", {}).get("search", [])
         
-        print(f"🔎 Найдено записей: {len(search_results)}")
+        print(f"🔎 Найдено записей с фамилией {TARGET_SURNAME}: {len(search_results)}")
         
         for person in search_results:
             page_id = str(person["pageid"])
             name = person["title"]
-            snippet = person["snippet"] # Краткая выжимка из статьи с HTML-тегами
+            snippet = person["snippet"] 
             
-            # Убираем HTML теги из сниппета для чистоты
             clean_snippet = snippet.replace('<span class="searchmatch">', '').replace('</span>', '')
             
             if page_id not in processed:
@@ -120,18 +126,18 @@ def check_archives():
                 if analysis:
                     link = f"https://ru.openlist.wiki/{name.replace(' ', '_')}"
                     message = (
-                        f"🚨 НАЙДЕНО ВОЗМОЖНОЕ СОВПАДЕНИЕ В АРХИВАХ!\n\n"
-                        f"📌 {name}\n\n"
-                        f"🔗 Ссылка: {link}\n\n"
-                        f"🤖 Вывод нейросети:\n{analysis}"
+                        f"🚨 АРХИВНЫЙ ПОИСК: ВОЗМОЖНОЕ СОВПАДЕНИЕ!\n\n"
+                        f"📌 Имя: {name}\n\n"
+                        f"🤖 Вывод ИИ:\n{analysis}\n\n"
+                        f"🔗 Ссылка на карточку:\n{link}"
                     )
                     send_to_vk(message)
                     print(f"✅ ОТПРАВЛЕНО В ВК: {name}")
                 else:
-                    print(f"❌ Не подошел: {name}")
+                    print(f"❌ Пропущен (не подходит): {name}")
                 
                 save_person(page_id)
-                time.sleep(1) # Пауза между запросами к нейросети
+                time.sleep(1.5) 
                 
     except Exception as e:
         print(f"Ошибка при запросе к API: {e}")
