@@ -2,10 +2,9 @@ import os
 import json
 import time
 import sqlite3
-import feedparser
 import requests
-from datetime import datetime, timedelta
-from replicate import Client
+import httpx
+import asyncio
 from dotenv import load_dotenv
 from vk_api import VkApi
 from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
@@ -15,106 +14,28 @@ from vk_api.utils import get_random_id
 load_dotenv()
 VK_TOKEN = os.getenv("VK_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN") # Опционально для расширенных лимитов поиска
-
-# Клиент Replicate
-rep_client = Client(api_token=REPLICATE_API_TOKEN)
-
-# База данных SQLite
-DB_FILE = "neuro_hunter.db"
-conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.executescript("""
-CREATE TABLE IF NOT EXISTS marketplaces (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE,
-    url TEXT,
-    accessible INTEGER DEFAULT 0,
-    payment_info TEXT,
-    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS scanned_models (
-    model_id TEXT UNIQUE,
-    platform TEXT,
-    notified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-""")
-conn.commit()
-
-# ---------- ТЕКУЩИЙ СТЕК ----------
-MY_STACK = {
-    "hyper-flux-8step": {
-        "model": "bytedance/hyper-flux-8step",
-        "price": 0.003,
-        "category": "image"
-    },
-    "qwen-image-edit": {
-        "model": "qwen/qwen-image-edit-2511",
-        "price": 0.004,
-        "category": "image_edit"
-    },
-    "nano-banana": {
-        "model": "google/nano-banana",
-        "price": 0.002,
-        "category": "image"
-    },
-    "nano-banana-2": {
-        "model": "google/nano-banana-2",
-        "price": 0.0025,
-        "category": "image"
-    },
-    "gpt-image-2": {
-        "model": "openai/gpt-image-2",
-        "price": 0.004,
-        "category": "image"
-    },
-    "wan-i2v-fast": {
-        "model": "wan-video/wan-2.2-i2v-fast",
-        "price": 0.02,
-        "category": "video"
-    },
-    "wan-t2v-fast": {
-        "model": "wan-video/wan-2.2-t2v-fast",
-        "price": 0.015,
-        "category": "video"
-    },
-    "wan-animate-replace": {
-        "model": "wan-video/wan-2.2-animate-replace",
-        "price": 0.025,
-        "category": "video"
-    },
-    "wan-s2v": {
-        "model": "wan-video/wan-2.2-s2v",
-        "price": 0.03,
-        "category": "video"
-    },
-    "gpt4o-mini": {
-        "model": "openai/gpt-4o-mini",
-        "price": 0.00015,
-        "category": "text"
-    },
-    "music-1.5": {
-        "model": "minimax/music-1.5",
-        "price": 0.01,
-        "category": "audio"
-    }
-}
-STACK_JSON = json.dumps(MY_STACK, indent=2, ensure_ascii=False)
-
-# ---------- ИСТОЧНИКИ ДЛЯ РФ/КИТАЙ ОХОТЫ ----------
-RSS_SOURCES = [
-    "https://habr.com/ru/rss/hub/artificial_intelligence/all/",
-    "https://vc.ru/rss/crypto",
-    "https://huggingface.co/blog/feed.xml",
-]
+SILICONFLOW_API_TOKEN = os.getenv("SILICONFLOW_API_TOKEN")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN") # Для обхода лимитов GitHub API
 
 # ---------- VK БОТ LONG POLL ----------
 vk_session = VkApi(token=VK_TOKEN)
 vk = vk_session.get_api()
 longpoll = VkBotLongPoll(vk_session, group_id=GROUP_ID)
+
+# База данных SQLite только для репозиториев
+DB_FILE = "neuro_hunter.db"
+conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.executescript("""
+CREATE TABLE IF NOT EXISTS scanned_repos (
+    repo_id TEXT UNIQUE,
+    repo_name TEXT,
+    url TEXT,
+    notified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+""")
+conn.commit()
 
 def send_message(peer_id, text):
     try:
@@ -125,162 +46,54 @@ def send_message(peer_id, text):
             dont_parse_links=0
         )
     except Exception as e:
-        print(f"Ошибка отправки: {e}")
+        print(f"Ошибка отправки сообщения в ВК: {e}")
 
-# ---------- GPT-4O-MINI ОБЁРТКА ----------
-def ask_gpt(system_prompt, user_prompt, max_tokens=800):
+# ---------- СВЕРХДЕШЕВЫЙ И УМНЫЙ ФИЛЬТР НА DEEPSEEK-V3 ----------
+def ask_deepseek_sync(system_prompt, user_prompt):
+    """Синхронная обертка для вызова DeepSeek (так как LongPoll работает в синхронном цикле)"""
+    if not SILICONFLOW_API_TOKEN:
+        print("❌ Ошибка: SILICONFLOW_API_TOKEN не настроен в .env")
+        return None
+        
+    url = "https://api.siliconflow.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {SILICONFLOW_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "deepseek-ai/DeepSeek-V3",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "max_tokens": 400,
+        "temperature": 0.1,
+        "stream": False
+    }
+    
     try:
-        output = rep_client.run(
-            "openai/gpt-4o-mini",
-            input={
-                "prompt": user_prompt,
-                "system_prompt": system_prompt,
-                "max_tokens": max_tokens,
-                "temperature": 0.2
-            }
-        )
-        return "".join(output).strip()
+        # Используем стандартный requests для синхронного выполнения внутри handle_command
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        else:
+            print(f"⚠️ SiliconFlow ошибка: {resp.status_code} - {resp.text}")
+            return None
     except Exception as e:
-        print(f"GPT error: {e}")
+        print(f"❌ Ошибка вызова DeepSeek: {e}")
         return None
 
-# ---------- ОХОТА ЗА МАРКЕТПЛЕЙСАМИ ----------
-def hunt_marketplaces():
-    results = []
-    system_prompt = (
-        "Ты — скаут AI-платформ. Анализируй новости ИИ. Мы ищем новые облачные сервисы, "
-        "китайские или российские маркетплейсы моделей, новые API-хабы (аналоги Replicate/OpenRouter), "
-        "которые работают без VPN и предоставляют доступ к генерации фото, видео, тексту или музыке. "
-        "Ответь СТРОГО в формате JSON без лишнего текста: "
-        '{"is_marketplace": true/false, "name": "название сервиса", "url": "ссылка", "reason": "чем полезен и какие модели есть"}.'
-    )
-    for rss_url in RSS_SOURCES:
-        try:
-            feed = feedparser.parse(rss_url)
-            for entry in feed.entries[:10]:
-                title = entry.get("title", "")
-                desc = entry.get("description", "")[:500]
-                link = entry.get("link", "")
-                answer = ask_gpt(system_prompt, f"Заголовок: {title}\nОписание: {desc}\nСсылка: {link}")
-                if not answer:
-                    continue
-                try:
-                    if "{" in answer:
-                        json_str = answer[answer.find("{"):answer.rfind("}")+1]
-                        info = json.loads(json_str)
-                    else:
-                        continue
-                except:
-                    continue
-
-                if info.get("is_marketplace"):
-                    name = info.get("name", "Безымянный")
-                    url = info.get("url", link)
-                    accessible = check_accessibility(url)
-                    cursor.execute("SELECT id FROM marketplaces WHERE url=?", (url,))
-                    if not cursor.fetchone():
-                        cursor.execute(
-                            "INSERT OR IGNORE INTO marketplaces (name, url, accessible) VALUES (?,?,?)",
-                            (name, url, 1 if accessible else -1)
-                        )
-                        conn.commit()
-                        results.append(f"🔍 {name}\n🔗 {url}\n📡 Доступ из РФ: {'Да' if accessible else 'Нет'}\n💳 Оплата: проверь вручную")
-        except Exception as e:
-            print(f"Ошибка RSS {rss_url}: {e}")
-            continue
-    if not results:
-        return "Новых маркетплейсов не обнаружено. Добавь RSS источники или пришли ссылку вручную."
-    return "🕵️ Найдены потенциальные маркетплейсы:\n\n" + "\n\n".join(results)
-
-def check_accessibility(url):
-    try:
-        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        return resp.status_code == 200
-    except:
-        return False
-
-# ---------- СБОР МОДЕЛЕЙ И БАЗ ДАННЫХ ----------
-def fetch_replicate_models(limit=20):
-    url = f"https://api.replicate.com/v1/models"
-    headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code != 200: return []
-        data = resp.json()
-        if "results" not in data: return []
-        
-        models = []
-        for m in data["results"][:limit]:
-            owner = m.get("owner", "unknown")
-            name = m.get("name", "unknown")
-            desc = m.get("description", "") if m.get("description") else "Нет описания"
-            models.append({
-                "id": f"{owner}/{name}",
-                "platform": "replicate",
-                "name": f"{owner}/{name}",
-                "description": desc[:300],
-                "price_raw": "расчёт по факту работы",
-                "url": f"https://replicate.com/{owner}/{name}",
-                "created": m.get("created_at", "")
-            })
-        return models
-    except Exception: return []
-
-def fetch_modelscope_models(limit=20):
-    url = "https://modelscope.cn/api/v1/models"
-    params = {"PageSize": limit, "PageNumber": 1, "SortBy": "GmtModified", "Target": "inference"}
-    try:
-        resp = requests.get(url, params=params, timeout=10).json()
-        models = []
-        for item in resp.get("Data", {}).get("Models", []):
-            name = item["ModelName"]
-            m_id = item["ModelId"]
-            models.append({
-                "id": m_id,
-                "platform": "modelscope",
-                "name": name,
-                "description": item.get("Description", "")[:300],
-                "price_raw": "смотри на странице",
-                "url": f"https://modelscope.cn/models/{m_id}",
-                "created": item.get("GmtModified", "")
-            })
-        return models
-    except Exception: return []
-
-def fetch_siliconflow_models(limit=20):
-    url = "https://api.siliconflow.com/v1/models"
-    sf_token = os.getenv("SILICONFLOW_API_TOKEN")
-    if not sf_token: return []
-    headers = {"Authorization": f"Bearer {sf_token}", "accept": "application/json"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code != 200: return []
-        data = resp.json()
-        if "data" not in data: return []
-        
-        models = []
-        for m in data["data"][:limit]:
-            m_id = m.get("id", "unknown")
-            models.append({
-                "id": m_id,
-                "platform": "siliconflow",
-                "name": m_id,
-                "description": f"Модель на китайском API-хабе. Тип: {m.get('object', 'model')}",
-                "price_raw": "Цены в юанях/долларах (жесткий демпинг)",
-                "url": "https://www.siliconflow.com/models",
-                "created": ""
-            })
-        return models
-    except Exception: return []
-
-# 🔥 ОХОТА НА GITHUB ЗА БАЗАМИ ЗАДАНИЙ (ВПР И ОЛИМПИАДЫ)
-def fetch_github_olympiads(limit=30):
+# ---------- ПОИСК НА GITHUB ЗА БАЗАМИ ЗАДАНИЙ ----------
+def fetch_github_olympiads(limit=40):
     url = "https://api.github.com/search/repositories"
+    
     search_queries = [
-        "vpr json", "vpr dataset", "впр математика", "впр русский",
+        "vpr json", "впр математика", "впр русский", "задания впр",
         "olymp json", "olympiad sirius", "олимпиада сириус", "олимпиада курчатов",
-        "vosh history", "всош задания", "задания впр"
+        "олимпиада ломоносов", "высшая проба задания", "конкурс кенгуру", "конкурс чип",
+        "всош задания", "vosh dataset"
     ]
+    
     headers = {"Accept": "application/vnd.github+json"}
     if GITHUB_TOKEN:
         headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
@@ -289,7 +102,7 @@ def fetch_github_olympiads(limit=30):
     seen_urls = set()
     
     for q in search_queries:
-        params = {"q": f"{q} in:name,description,readme", "sort": "stars", "order": "desc", "per_page": 10}
+        params = {"q": f"{q} in:name,description,readme", "sort": "stars", "order": "desc", "per_page": 15}
         try:
             resp = requests.get(url, headers=headers, params=params, timeout=10)
             if resp.status_code == 200:
@@ -299,110 +112,94 @@ def fetch_github_olympiads(limit=30):
                     if repo_url not in seen_urls:
                         seen_urls.add(repo_url)
                         discovered_repos.append({
-                            "id": f"gh_{item.get('id')}",
-                            "platform": "github",
+                            "id": str(item.get("id")),
                             "name": item.get("full_name", "unknown"),
                             "description": item.get("description", "") if item.get("description") else "Нет описания",
-                            "price_raw": "Бесплатно (Open Source)",
                             "url": repo_url
                         })
-            time.sleep(1)
+            time.sleep(1) 
         except Exception as e:
             print(f"Ошибка поиска GitHub по запросу '{q}': {e}")
+            
     return discovered_repos[:limit]
 
-# ---------- СРАВНЕНИЕ И АНАЛИЗ ----------
-def compare_models(models, peer_id):
-    found = 0
-    for model in models:
-        cursor.execute("SELECT model_id FROM scanned_models WHERE model_id=?", (model["id"],))
-        if cursor.fetchone(): continue
+# ---------- АНАЛИЗ НАЙДЕННЫХ РЕПОЗИТОРИЕВ ----------
+def process_hunting(peer_id):
+    send_message(peer_id, "🏹 Начинаю глубокое сканирование GitHub в поисках ВПР и Олимпиад через DeepSeek-V3...")
+    repos = fetch_github_olympiads()
+    
+    if not repos:
+        send_message(peer_id, "⚠️ Не удалось получить данные с GitHub. Проверь сеть или GITHUB_TOKEN.")
+        return
 
-        if model["platform"] == "github":
-            # Специальный промпт для Гитхаба: ищем именно структурированные задания
-            system_prompt = "Ты — AI-эксперт по базам данных обучения. Проанализируй описание репозитория. Мы ищем готовые спарсенные базы данных олимпиад (Сириус, ВсОШ, Курчатов) или тестов ВПР по классам в форматах JSON, CSV, SQL или скрипты парсинга. Если репозиторий содержит полезные структурированные задания для школьников, напиши кратко, какие предметы/классы там есть. Если это пустой учебный проект или мусор — ответь строго одним словом: ИГНОР."
-        else:
-            # Стандартный промпт для нейросетевого стека
-            system_prompt = f"Ты — строгий AI-скаут. У нас есть текущий стек: {STACK_JSON}. Проанализируй модель. Если это принципиально НОВАЯ флагманская модель, превосходящая наш стек — напиши рекомендацию. В остальных случаях ответь строго одним словом: ИГНОР."
+    system_prompt = (
+        "Ты — эксперт по анализу учебных датасетов. Проанализируй имя и описание репозитория GitHub. "
+        "Мы ищем готовые спарсенные базы данных, архивы задач конкурсов и олимпиад (Сириус, ВсОШ, Курчатов, ЧИП, Кенгуру) "
+        "или тестов ВПР по классам. Форматы файлов должны быть JSON, CSV, SQL, XML, или репозиторий должен содержать скрипты-парсеры этих заданий. "
+        "Если репозиторий действительно содержит структурированные учебные задания, напиши очень кратко (2-3 предложения): "
+        "какие предметы, конкурсы или классы там найдены. "
+        "Если это пустой студенческий репозиторий, лаба или мусор, не связанный с готовыми заданиями — ответь строго одним словом: ИГНОР."
+    )
+    
+    found_count = 0
+    for repo in repos:
+        cursor.execute("SELECT repo_id FROM scanned_repos WHERE repo_id=?", (repo["id"],))
+        if cursor.fetchone():
+            continue 
 
-        user_prompt = f"Название: {model['name']} ({model['platform']})\nОписание: {model['description']}\nСсылка: {model['url']}"
-        response = ask_gpt(system_prompt, user_prompt, max_tokens=500)
-        if not response or "ИГНОР" in response: continue
+        user_prompt = f"Репозиторий: {repo['name']}\nОписание: {repo['description']}\nСсылка: {repo['url']}"
+        response = ask_deepseek_sync(system_prompt, user_prompt)
+        
+        if not response or "ИГНОР" in response:
+            continue
 
-        if model["platform"] == "github":
-            message = f"🎯 НАЙДЕНА БАЗА ЗАДАНИЙ НА GITHUB!\n📦 Репозиторий: {model['name']}\n📝 Анализ содержимого:\n{response}\n🔗 {model['url']}"
-        else:
-            message = f"🔥 Новая модель достойна замены!\n{model['name']}\n{response}\n🔗 {model['url']}"
-            
+        message = (
+            f"🎯 НАЙДЕН СЛИВ ЗАДАНИЙ НА GITHUB!\n\n"
+            f"📦 Репозиторий: {repo['name']}\n"
+            f"📝 Анализ ИИ:\n{response}\n\n"
+            f"🔗 Ссылка на исходники: {repo['url']}"
+        )
         send_message(peer_id, message)
-        cursor.execute("INSERT OR IGNORE INTO scanned_models (model_id, platform) VALUES (?,?)", (model["id"], model["platform"]))
+        
+        cursor.execute("INSERT OR IGNORE INTO scanned_repos (repo_id, repo_name, url) VALUES (?,?,?)", 
+                       (repo["id"], repo["name"], repo["url"]))
         conn.commit()
-        found += 1
-        time.sleep(1)
-    return found
+        found_count += 1
+        time.sleep(1.5) 
+
+    if found_count == 0:
+        send_message(peer_id, "📭 Новых баз данных или парсеров на GitHub пока не появилось. Я продолжу мониторинг!")
+    else:
+        send_message(peer_id, f"✅ Охота завершена! Найдено и отправлено новых источников: {found_count}")
 
 # ---------- ОБРАБОТКА КОМАНД ----------
 def handle_command(peer_id, text):
     text = text.strip().lower()
-    if text.startswith("/hunt"):
-        send_message(peer_id, "🔎 Запускаю охоту за маркетплейсами...")
-        result = hunt_marketplaces()
-        send_message(peer_id, result)
-
-    elif text.startswith("/scan"):
-        parts = text.split()
-        platform = parts[1] if len(parts) > 1 else "replicate"
-        send_message(peer_id, f"🔍 Сканирую {platform} и анализирую цели...")
-        
-        if platform == "replicate": models = fetch_replicate_models()
-        elif platform == "modelscope": models = fetch_modelscope_models()
-        elif platform == "siliconflow": models = fetch_siliconflow_models(limit=100)
-        elif platform == "github": models = fetch_github_olympiads(limit=30)
-        else:
-            models = []
-            send_message(peer_id, "Платформа не поддерживается.")
-            
-        if models:
-            count = compare_models(models, peer_id)
-            if count == 0: send_message(peer_id, "Ничего нового или подходящего не найдено.")
-            else: send_message(peer_id, f"✅ Обработка завершена, найдено: {count}")
-        else:
-            send_message(peer_id, "Не удалось получить данные.")
-
-    elif text.startswith("/list"):
-        cursor.execute("SELECT name, url, accessible FROM marketplaces ORDER BY added_at DESC")
-        rows = cursor.fetchall()
-        if rows:
-            msg = "📋 Найденные маркетплейсы:\n"
-            for name, url, acc in rows:
-                status = "🟢 Доступен" if acc == 1 else "🔴 Недоступен"
-                msg += f"{name}: {url} ({status})\n"
-            send_message(peer_id, msg)
-        else: send_message(peer_id, "Список маркетплейсов пуст.")
+    
+    if text.startswith("/scan"):
+        process_hunting(peer_id)
 
     elif text.startswith("/help"):
         help_text = (
-            "Команды:\n"
-            "/hunt — искать новые маркетплейсы AI\n"
-            "/scan replicate — сравнить модели Replicate\n"
-            "/scan siliconflow — проверить хаб SiliconFlow\n"
-            "/scan github — запустить поиск баз ВПР и Олимпиад на GitHub 🎯\n"
-            "/list — показать маркетплейсы\n"
-            "/help — помощь"
+            "🤖 Бот-Охотник за контентом ВПР и Олимпиад (Powered by DeepSeek-V3):\n\n"
+            "/scan — запустить ИИ-сканирование GitHub на наличие баз заданий, файлов JSON/CSV и парсеров 🎯\n"
+            "/help — показать эту справку"
         )
         send_message(peer_id, help_text)
 
 # ---------- ГЛАВНЫЙ ЦИКЛ ----------
 def main():
-    print("Бот-Охотник успешно запущен на сервере...")
+    print("Бот-Охотник (DeepSeek-версия) успешно запущен...")
     for event in longpoll.listen():
         if event.type == VkBotEventType.MESSAGE_NEW:
             msg_obj = event.obj.message
             text = msg_obj.get('text', '')
             peer_id = msg_obj.get('peer_id')
             if text:
-                try: handle_command(peer_id, text)
-                except Exception as e: send_message(peer_id, f"⚠️ Ошибка: {e}")
+                try: 
+                    handle_command(peer_id, text)
+                except Exception as e: 
+                    send_message(peer_id, f"⚠️ Ошибка в обработке команды: {e}")
 
 if __name__ == "__main__":
     main()
