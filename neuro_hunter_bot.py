@@ -16,6 +16,7 @@ load_dotenv()
 VK_TOKEN = os.getenv("VK_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN") # Опционально для расширенных лимитов поиска
 
 # Клиент Replicate
 rep_client = Client(api_token=REPLICATE_API_TOKEN)
@@ -43,11 +44,11 @@ CREATE TABLE IF NOT EXISTS scanned_models (
 """)
 conn.commit()
 
-# ---------- ТЕКУЩИЙ СТЕК (ВСЕ ТВОИ МОДЕЛИ) ----------
+# ---------- ТЕКУЩИЙ СТЕК ----------
 MY_STACK = {
     "hyper-flux-8step": {
         "model": "bytedance/hyper-flux-8step",
-        "price": 0.003,          # примерная цена в USD
+        "price": 0.003,
         "category": "image"
     },
     "qwen-image-edit": {
@@ -66,7 +67,7 @@ MY_STACK = {
         "category": "image"
     },
     "gpt-image-2": {
-        "model": "openai/gpt-image-2",   # Уточни точный model_id на Replicate, если есть
+        "model": "openai/gpt-image-2",
         "price": 0.004,
         "category": "image"
     },
@@ -103,13 +104,12 @@ MY_STACK = {
 }
 STACK_JSON = json.dumps(MY_STACK, indent=2, ensure_ascii=False)
 
-# ---------- ОБНОВЛЕННЫЕ ИСТОЧНИКИ ДЛЯ РФ/КИТАЙ ОХОТЫ ----------
+# ---------- ИСТОЧНИКИ ДЛЯ РФ/КИТАЙ ОХОТЫ ----------
 RSS_SOURCES = [
-    "https://habr.com/ru/rss/hub/artificial_intelligence/all/", # Главный ИИ-хаб на Хабре
-    "https://vc.ru/rss/crypto",                                 # Технологии и ИИ на VC
-    "https://huggingface.co/blog/feed.xml",                     # Мировые опенсорс релизы
+    "https://habr.com/ru/rss/hub/artificial_intelligence/all/",
+    "https://vc.ru/rss/crypto",
+    "https://huggingface.co/blog/feed.xml",
 ]
-# Если RSS пуст, /hunt просто вернёт сообщение. Можешь добавить позже.
 
 # ---------- VK БОТ LONG POLL ----------
 vk_session = VkApi(token=VK_TOKEN)
@@ -199,104 +199,65 @@ def check_accessibility(url):
     except:
         return False
 
-# ---------- СБОР МОДЕЛЕЙ ----------
+# ---------- СБОР МОДЕЛЕЙ И БАЗ ДАННЫХ ----------
 def fetch_replicate_models(limit=20):
-    # Используем базовый эндпоинт, который гарантированно отдаёт список моделей
     url = f"https://api.replicate.com/v1/models"
     headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}"}
     try:
         resp = requests.get(url, headers=headers, timeout=15)
-        print(f"[DEBUG] Replicate status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            print(f"[ERROR] Replicate API error: {resp.text}")
-            return []
-            
+        if resp.status_code != 200: return []
         data = resp.json()
-        # API Replicate возвращает список в ключе 'results'
-        if not isinstance(data, dict) or "results" not in data:
-            print(f"[ERROR] Unexpected Replicate response: {data}")
-            return []
-            
+        if "results" not in data: return []
+        
         models = []
-        # Берём первые N моделей из выдачи
         for m in data["results"][:limit]:
             owner = m.get("owner", "unknown")
             name = m.get("name", "unknown")
             desc = m.get("description", "") if m.get("description") else "Нет описания"
-            desc = desc[:300]
-            
             models.append({
                 "id": f"{owner}/{name}",
                 "platform": "replicate",
                 "name": f"{owner}/{name}",
-                "description": desc,
+                "description": desc[:300],
                 "price_raw": "расчёт по факту работы",
                 "url": f"https://replicate.com/{owner}/{name}",
                 "created": m.get("created_at", "")
             })
-        print(f"[DEBUG] Replicate models fetched successfully: {len(models)}")
         return models
-    except Exception as e:
-        print(f"[ERROR] Replicate fetch exception: {e}")
-        return []
-        
+    except Exception: return []
+
 def fetch_modelscope_models(limit=20):
     url = "https://modelscope.cn/api/v1/models"
-    params = {
-        "PageSize": limit,
-        "PageNumber": 1,
-        "SortBy": "GmtModified",
-        "Target": "inference"
-    }
+    params = {"PageSize": limit, "PageNumber": 1, "SortBy": "GmtModified", "Target": "inference"}
     try:
         resp = requests.get(url, params=params, timeout=10).json()
         models = []
         for item in resp.get("Data", {}).get("Models", []):
             name = item["ModelName"]
             m_id = item["ModelId"]
-            desc = item.get("Description", "")[:300]
             models.append({
                 "id": m_id,
                 "platform": "modelscope",
                 "name": name,
-                "description": desc,
+                "description": item.get("Description", "")[:300],
                 "price_raw": "смотри на странице",
                 "url": f"https://modelscope.cn/models/{m_id}",
                 "created": item.get("GmtModified", "")
             })
         return models
-    except Exception as e:
-        print(f"ModelScope fetch error: {e}")
-        return []
+    except Exception: return []
 
 def fetch_siliconflow_models(limit=20):
-    # Поменяли на стабильный международный домен .com
     url = "https://api.siliconflow.com/v1/models"
     sf_token = os.getenv("SILICONFLOW_API_TOKEN")
-    
-    if not sf_token:
-        print("[ERROR] SILICONFLOW_API_TOKEN не найден в .env")
-        return []
-        
-    # Добавили обязательный заголовок "accept"
-    headers = {
-        "Authorization": f"Bearer {sf_token}",
-        "accept": "application/json"
-    }
+    if not sf_token: return []
+    headers = {"Authorization": f"Bearer {sf_token}", "accept": "application/json"}
     try:
         resp = requests.get(url, headers=headers, timeout=15)
-        print(f"[DEBUG] SiliconFlow status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            print(f"[ERROR] SiliconFlow API error text: {resp.text}")
-            return []
-            
+        if resp.status_code != 200: return []
         data = resp.json()
-        if not isinstance(data, dict) or "data" not in data:
-            print(f"[ERROR] Unexpected SiliconFlow structure: {data}")
-            return []
-            
+        if "data" not in data: return []
+        
         models = []
         for m in data["data"][:limit]:
             m_id = m.get("id", "unknown")
@@ -309,38 +270,75 @@ def fetch_siliconflow_models(limit=20):
                 "url": "https://www.siliconflow.com/models",
                 "created": ""
             })
-        print(f"[DEBUG] SiliconFlow models fetched successfully: {len(models)}")
         return models
-    except Exception as e:
-        print(f"[ERROR] SiliconFlow fetch exception: {e}")
-        return []
+    except Exception: return []
 
-# ---------- СРАВНЕНИЕ МОДЕЛЕЙ ----------
+# 🔥 ОХОТА НА GITHUB ЗА БАЗАМИ ЗАДАНИЙ (ВПР И ОЛИМПИАДЫ)
+def fetch_github_olympiads(limit=30):
+    url = "https://api.github.com/search/repositories"
+    search_queries = [
+        "vpr json", "vpr dataset", "впр математика", "впр русский",
+        "olymp json", "olympiad sirius", "олимпиада сириус", "олимпиада курчатов",
+        "vosh history", "всош задания", "задания впр"
+    ]
+    headers = {"Accept": "application/vnd.github+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+        
+    discovered_repos = []
+    seen_urls = set()
+    
+    for q in search_queries:
+        params = {"q": f"{q} in:name,description,readme", "sort": "stars", "order": "desc", "per_page": 10}
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("items", []):
+                    repo_url = item.get("html_url")
+                    if repo_url not in seen_urls:
+                        seen_urls.add(repo_url)
+                        discovered_repos.append({
+                            "id": f"gh_{item.get('id')}",
+                            "platform": "github",
+                            "name": item.get("full_name", "unknown"),
+                            "description": item.get("description", "") if item.get("description") else "Нет описания",
+                            "price_raw": "Бесплатно (Open Source)",
+                            "url": repo_url
+                        })
+            time.sleep(1)
+        except Exception as e:
+            print(f"Ошибка поиска GitHub по запросу '{q}': {e}")
+    return discovered_repos[:limit]
+
+# ---------- СРАВНЕНИЕ И АНАЛИЗ ----------
 def compare_models(models, peer_id):
     found = 0
     for model in models:
         cursor.execute("SELECT model_id FROM scanned_models WHERE model_id=?", (model["id"],))
-        if cursor.fetchone():
-            continue
+        if cursor.fetchone(): continue
 
-        system_prompt = f"""Ты — строгий AI-скаут. У нас есть текущий стек: {STACK_JSON}
-Проанализируй модель. Если эта модель уже является аналогом нашего текущего стека (например, обычный Flux Dev, Wan 2.2 или DeepSeek V3/R1), который мы уже знаем и изучили, или если это мелкий технический скрипт/мусор — ответь СТРОГО одним словом: ИГНОР.
+        if model["platform"] == "github":
+            # Специальный промпт для Гитхаба: ищем именно структурированные задания
+            system_prompt = "Ты — AI-эксперт по базам данных обучения. Проанализируй описание репозитория. Мы ищем готовые спарсенные базы данных олимпиад (Сириус, ВсОШ, Курчатов) или тестов ВПР по классам в форматах JSON, CSV, SQL или скрипты парсинга. Если репозиторий содержит полезные структурированные задания для школьников, напиши кратко, какие предметы/классы там есть. Если это пустой учебный проект или мусор — ответь строго одним словом: ИГНОР."
+        else:
+            # Стандартный промпт для нейросетевого стека
+            system_prompt = f"Ты — строгий AI-скаут. У нас есть текущий стек: {STACK_JSON}. Проанализируй модель. Если это принципиально НОВАЯ флагманская модель, превосходящая наш стек — напиши рекомендацию. В остальных случаях ответь строго одним словом: ИГНОР."
 
-Присылай рекомендацию только в одном случае: если это принципиально НОВАЯ флагманская модель от крупных брендов (OpenAI, Google, Black Forest Labs, DeepSeek, Alibaba), которая по качеству или возможностям резко превосходит наш стек. Во всех остальных случаях пиши: ИГНОР."""
-        user_prompt = f"Модель: {model['name']} ({model['platform']})\nОписание: {model['description']}\nЦена: {model['price_raw']}\nСсылка: {model['url']}"
-
+        user_prompt = f"Название: {model['name']} ({model['platform']})\nОписание: {model['description']}\nСсылка: {model['url']}"
         response = ask_gpt(system_prompt, user_prompt, max_tokens=500)
-        if not response:
-            continue
+        if not response or "ИГНОР" in response: continue
 
-        if "ИГНОР" not in response:
+        if model["platform"] == "github":
+            message = f"🎯 НАЙДЕНА БАЗА ЗАДАНИЙ НА GITHUB!\n📦 Репозиторий: {model['name']}\n📝 Анализ содержимого:\n{response}\n🔗 {model['url']}"
+        else:
             message = f"🔥 Новая модель достойна замены!\n{model['name']}\n{response}\n🔗 {model['url']}"
-            send_message(peer_id, message)
-            cursor.execute("INSERT OR IGNORE INTO scanned_models (model_id, platform) VALUES (?,?)",
-                           (model["id"], model["platform"]))
-            conn.commit()
-            found += 1
-            time.sleep(1)
+            
+        send_message(peer_id, message)
+        cursor.execute("INSERT OR IGNORE INTO scanned_models (model_id, platform) VALUES (?,?)", (model["id"], model["platform"]))
+        conn.commit()
+        found += 1
+        time.sleep(1)
     return found
 
 # ---------- ОБРАБОТКА КОМАНД ----------
@@ -354,24 +352,22 @@ def handle_command(peer_id, text):
     elif text.startswith("/scan"):
         parts = text.split()
         platform = parts[1] if len(parts) > 1 else "replicate"
-        send_message(peer_id, f"🔍 Сканирую {platform} и сравниваю со стеком...")
-        if platform == "replicate":
-            models = fetch_replicate_models()
-        elif platform == "modelscope":
-            models = fetch_modelscope_models()
-        elif platform == "siliconflow":  # <-- Передаем лимит 100 моделей
-            models = fetch_siliconflow_models(limit=100)
+        send_message(peer_id, f"🔍 Сканирую {platform} и анализирую цели...")
+        
+        if platform == "replicate": models = fetch_replicate_models()
+        elif platform == "modelscope": models = fetch_modelscope_models()
+        elif platform == "siliconflow": models = fetch_siliconflow_models(limit=100)
+        elif platform == "github": models = fetch_github_olympiads(limit=30)
         else:
             models = []
-            send_message(peer_id, "Платформа не поддерживается или не найдена.")
+            send_message(peer_id, "Платформа не поддерживается.")
+            
         if models:
             count = compare_models(models, peer_id)
-            if count == 0:
-                send_message(peer_id, "Ничего подходящего для замены не найдено.")
-            else:
-                send_message(peer_id, f"✅ Обработано, предложено замен: {count}")
+            if count == 0: send_message(peer_id, "Ничего нового или подходящего не найдено.")
+            else: send_message(peer_id, f"✅ Обработка завершена, найдено: {count}")
         else:
-            send_message(peer_id, "Не удалось получить модели.")
+            send_message(peer_id, "Не удалось получить данные.")
 
     elif text.startswith("/list"):
         cursor.execute("SELECT name, url, accessible FROM marketplaces ORDER BY added_at DESC")
@@ -379,37 +375,34 @@ def handle_command(peer_id, text):
         if rows:
             msg = "📋 Найденные маркетплейсы:\n"
             for name, url, acc in rows:
-                status = "🟢 Доступен" if acc == 1 else ("🔴 Недоступен" if acc == -1 else "❓ Не проверен")
+                status = "🟢 Доступен" if acc == 1 else "🔴 Недоступен"
                 msg += f"{name}: {url} ({status})\n"
             send_message(peer_id, msg)
-        else:
-            send_message(peer_id, "Список пуст. Запусти /hunt.")
+        else: send_message(peer_id, "Список маркетплейсов пуст.")
 
     elif text.startswith("/help"):
         help_text = (
             "Команды:\n"
             "/hunt — искать новые маркетплейсы AI\n"
-            "/scan replicate — сравнить модели Replicate с твоим стеком\n"
-            "/scan modelscope — то же для ModelScope\n"
-            "/list — показать найденные маркетплейсы\n"
-            "/help — это сообщение"
+            "/scan replicate — сравнить модели Replicate\n"
+            "/scan siliconflow — проверить хаб SiliconFlow\n"
+            "/scan github — запустить поиск баз ВПР и Олимпиад на GitHub 🎯\n"
+            "/list — показать маркетплейсы\n"
+            "/help — помощь"
         )
         send_message(peer_id, help_text)
 
 # ---------- ГЛАВНЫЙ ЦИКЛ ----------
 def main():
-    print("Бот запущен. Жду команд в группе...")
+    print("Бот-Охотник успешно запущен на сервере...")
     for event in longpoll.listen():
         if event.type == VkBotEventType.MESSAGE_NEW:
             msg_obj = event.obj.message
             text = msg_obj.get('text', '')
             peer_id = msg_obj.get('peer_id')
             if text:
-                try:
-                    handle_command(peer_id, text)
-                except Exception as e:
-                    print(f"Ошибка: {e}")
-                    send_message(peer_id, f"⚠️ Ошибка: {e}")
+                try: handle_command(peer_id, text)
+                except Exception as e: send_message(peer_id, f"⚠️ Ошибка: {e}")
 
 if __name__ == "__main__":
     main()
