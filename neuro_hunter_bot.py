@@ -3,8 +3,6 @@ import json
 import time
 import sqlite3
 import requests
-import httpx
-import asyncio
 from dotenv import load_dotenv
 from vk_api import VkApi
 from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
@@ -15,24 +13,25 @@ load_dotenv()
 VK_TOKEN = os.getenv("VK_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 SILICONFLOW_API_TOKEN = os.getenv("SILICONFLOW_API_TOKEN")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN") # Для обхода лимитов GitHub API
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Критично для Code Search API
 
 # ---------- VK БОТ LONG POLL ----------
 vk_session = VkApi(token=VK_TOKEN)
 vk = vk_session.get_api()
 longpoll = VkBotLongPoll(vk_session, group_id=GROUP_ID)
 
-# База данных SQLite только для репозиториев
+# База данных SQLite — перенастроена на отслеживание конкретных файлов
 DB_FILE = "neuro_hunter.db"
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 cursor = conn.cursor()
 
+# Создаем таблицу для точечного кэширования файлов
 cursor.executescript("""
-CREATE TABLE IF NOT EXISTS scanned_repos (
-    repo_id TEXT UNIQUE,
+CREATE TABLE IF NOT EXISTS scanned_files (
+    file_url TEXT UNIQUE,
+    file_name TEXT,
     repo_name TEXT,
-    url TEXT,
-    notified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """)
 conn.commit()
@@ -50,7 +49,6 @@ def send_message(peer_id, text):
 
 # ---------- СВЕРХДЕШЕВЫЙ И УМНЫЙ ФИЛЬТР НА DEEPSEEK-V3 ----------
 def ask_deepseek_sync(system_prompt, user_prompt):
-    """Синхронная обертка для вызова DeepSeek (так как LongPoll работает в синхронном цикле)"""
     if not SILICONFLOW_API_TOKEN:
         print("❌ Ошибка: SILICONFLOW_API_TOKEN не настроен в .env")
         return None
@@ -72,7 +70,6 @@ def ask_deepseek_sync(system_prompt, user_prompt):
     }
     
     try:
-        # Используем стандартный requests для синхронного выполнения внутри handle_command
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
         if resp.status_code == 200:
             return resp.json()["choices"][0]["message"]["content"].strip()
@@ -83,94 +80,134 @@ def ask_deepseek_sync(system_prompt, user_prompt):
         print(f"❌ Ошибка вызова DeepSeek: {e}")
         return None
 
-# ---------- ПОИСК НА GITHUB ЗА БАЗАМИ ЗАДАНИЙ ----------
-def fetch_github_olympiads(limit=40):
-    url = "https://api.github.com/search/repositories"
+# ---------- ГЛУБОКАЯ ОХОТА НА GITHUB ЗА СТРУКТУРИРОВАННЫМИ ФАЙЛАМИ ----------
+def fetch_github_olympiad_files():
+    """
+    Сканирует GitHub изнутри (Code Search) на наличие файлов баз данных
+    по ВПР и расширенному списку всероссийских олимпиад.
+    """
+    url = "https://api.github.com/search/code"
     
-    search_queries = [
-        "vpr json", "впр математика", "впр русский", "задания впр",
-        "olymp json", "olympiad sirius", "олимпиада сириус", "олимпиада курчатов",
-        "олимпиада ломоносов", "высшая проба задания", "конкурс кенгуру", "конкурс чип",
-        "всош задания", "vosh dataset"
+    # Расширенный список олимпиад и маркеров баз данных
+    search_keywords = [
+        "vpr json", "впр математика 4 класс", "впр русский язык", "задания впр",
+        "олимпиада кенгуру", "русский медвежонок олимпиада", "олимпиада кит",
+        "конкурс чип человек и природа", "олимпис математика", "литенок",
+        "олимпиада сириус", "всош школьный этап", "всош муниципальный этап",
+        "высшая проба задания", "олимпиада курчатов", "questions json", "tasks csv"
     ]
+    
+    # Расширения файлов, где гарантированно есть готовая структура данных
+    file_extensions = ["json", "csv", "sql"]
     
     headers = {"Accept": "application/vnd.github+json"}
     if GITHUB_TOKEN:
-        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
-        
-    discovered_repos = []
+        headers["Authorization"] = f"token {GITHUB_TOKEN}"
+    else:
+        print("⚠️ Предупреждение: GITHUB_TOKEN не задан. Поиск по коду может вызывать ошибки лимитов!")
+
+    discovered_files = []
     seen_urls = set()
     
-    for q in search_queries:
-        params = {"q": f"{q} in:name,description,readme", "sort": "stars", "order": "desc", "per_page": 15}
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                for item in data.get("items", []):
-                    repo_url = item.get("html_url")
-                    if repo_url not in seen_urls:
-                        seen_urls.add(repo_url)
-                        discovered_repos.append({
-                            "id": str(item.get("id")),
-                            "name": item.get("full_name", "unknown"),
-                            "description": item.get("description", "") if item.get("description") else "Нет описания",
-                            "url": repo_url
-                        })
-            time.sleep(1) 
-        except Exception as e:
-            print(f"Ошибка поиска GitHub по запросу '{q}': {e}")
+    # Поиск по коду работает только при наличии авторизации или жестких лимитах
+    for keyword in search_keywords:
+        for ext in file_extensions:
+            # Формируем жесткий поисковый запрос по коду
+            query = f"{keyword} extension:{ext}"
+            params = {"q": query, "per_page": 10}
             
-    return discovered_repos[:limit]
+            try:
+                resp = requests.get(url, headers=headers, params=params, timeout=12)
+                
+                # Ловим лимиты GitHub API (для поиска по коду они строгие — 30 запросов в минуту)
+                if resp.status_code == 403:
+                    print("⏳ Достигнут лимит запросов GitHub API. Засыпаем на 25 секунд...")
+                    time.sleep(25)
+                    continue
+                    
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for item in data.get("items", []):
+                        file_url = item.get("html_url")
+                        repo_info = item.get("repository", {})
+                        repo_name = repo_info.get("full_name", "unknown")
+                        
+                        # Отсекаем студенческий мусор и лабы по ключевым словам в пути
+                        path_lower = file_url.lower()
+                        if any(x in path_lower for x in ["homework", "lab1", "lab2", "test_project", "sandbox"]):
+                            continue
+                            
+                        if file_url not in seen_urls:
+                            seen_urls.add(file_url)
+                            discovered_files.append({
+                                "file_name": item.get("name", "unknown"),
+                                "path": item.get("path", ""),
+                                "repo_name": repo_name,
+                                "url": file_url
+                            })
+                
+                # Микропауза, чтобы не злить GitHub
+                time.sleep(2)
+                
+            except Exception as e:
+                print(f"Ошибка поиска GitHub по коду '{query}': {e}")
+                time.sleep(2)
+                
+    return discovered_files
 
-# ---------- АНАЛИЗ НАЙДЕННЫХ РЕПОЗИТОРИЕВ ----------
+# ---------- АНАЛИЗ НАЙДЕННЫХ ФАЙЛОВ И ОТПРАВКА В ВК ----------
 def process_hunting(peer_id):
-    send_message(peer_id, "🏹 Начинаю глубокое сканирование GitHub в поисках ВПР и Олимпиад через DeepSeek-V3...")
-    repos = fetch_github_olympiads()
+    send_message(peer_id, "🏹 Начинаю глубокое сканирование внутренностей GitHub по коду, файлам JSON/CSV и олимпиадам (Кенгуру, Сириус, Медвежонок)...")
     
-    if not repos:
-        send_message(peer_id, "⚠️ Не удалось получить данные с GitHub. Проверь сеть или GITHUB_TOKEN.")
+    files = fetch_github_olympiad_files()
+    
+    if not files:
+        send_message(peer_id, "⚠️ Не удалось найти новые файлы или исчерпаны лимиты запросов к GitHub. Попробуй позже.")
         return
 
     system_prompt = (
-        "Ты — эксперт по анализу учебных датасетов. Проанализируй имя и описание репозитория GitHub. "
-        "Мы ищем готовые спарсенные базы данных, архивы задач конкурсов и олимпиад (Сириус, ВсОШ, Курчатов, ЧИП, Кенгуру) "
-        "или тестов ВПР по классам. Форматы файлов должны быть JSON, CSV, SQL, XML, или репозиторий должен содержать скрипты-парсеры этих заданий. "
-        "Если репозиторий действительно содержит структурированные учебные задания, напиши очень кратко (2-3 предложения): "
-        "какие предметы, конкурсы или классы там найдены. "
-        "Если это пустой студенческий репозиторий, лаба или мусор, не связанный с готовыми заданиями — ответь строго одним словом: ИГНОР."
+        "Ты — эксперт по анализу учебных баз данных. Проанализируй имя файла, его путь и репозиторий. "
+        "Мы ищем готовые, структурированные файлы вопросов, ответов, тестов ВПР или олимпиад (Сириус, ВсОШ, Кенгуру, Медвежонок, ЧИП, Кит). "
+        "Если этот файл действительно является базой данных с заданиями, напиши кратко (2 предложения): "
+        "какой предмет/олимпиада и для каких классов там содержатся данные. "
+        "Если это просто конфигурационный файл системы, манифест, лог или студенческий мусор — ответь строго одним словом: ИГНОР."
     )
     
     found_count = 0
-    for repo in repos:
-        cursor.execute("SELECT repo_id FROM scanned_repos WHERE repo_id=?", (repo["id"],))
+    for file_item in files:
+        # Проверяем по базе данных, не находили ли мы этот конкретный файл ранее
+        cursor.execute("SELECT file_url FROM scanned_files WHERE file_url=?", (file_item["url"],))
         if cursor.fetchone():
             continue 
 
-        user_prompt = f"Репозиторий: {repo['name']}\nОписание: {repo['description']}\nСсылка: {repo['url']}"
+        user_prompt = f"Файл: {file_item['file_name']}\nПуть в проекте: {file_item['path']}\nРепозиторий: {file_item['repo_name']}\nСсылка: {file_item['url']}"
         response = ask_deepseek_sync(system_prompt, user_prompt)
         
         if not response or "ИГНОР" in response:
             continue
 
+        # Формируем сочное сообщение для отправки в ВК
         message = (
-            f"🎯 НАЙДЕН СЛИВ ЗАДАНИЙ НА GITHUB!\n\n"
-            f"📦 Репозиторий: {repo['name']}\n"
-            f"📝 Анализ ИИ:\n{response}\n\n"
-            f"🔗 Ссылка на исходники: {repo['url']}"
+            f"🎯 НАЙДЕНА СТРУКТУРИРОВАННАЯ БАЗА ЗАДАНИЙ!\n\n"
+            f"📁 Файл: {file_item['file_name']}\n"
+            f"📦 Репозиторий: {file_item['repo_name']}\n"
+            f"🔍 Анализ ИИ:\n{response}\n\n"
+            f"🔗 Прямая ссылка на файл: {file_item['url']}"
         )
         send_message(peer_id, message)
         
-        cursor.execute("INSERT OR IGNORE INTO scanned_repos (repo_id, repo_name, url) VALUES (?,?,?)", 
-                       (repo["id"], repo["name"], repo["url"]))
+        # Записываем файл в базу данных, чтобы не дублировать уведомления
+        cursor.execute("INSERT OR IGNORE INTO scanned_files (file_url, file_name, repo_name) VALUES (?,?,?)", 
+                       (file_item["url"], file_item["file_name"], file_item["repo_name"]))
         conn.commit()
+        
         found_count += 1
-        time.sleep(1.5) 
+        time.sleep(2)  # Пауза между отправками в ВК
 
     if found_count == 0:
-        send_message(peer_id, "📭 Новых баз данных или парсеров на GitHub пока не появилось. Я продолжу мониторинг!")
+        send_message(peer_id, "📭 Новых структурированных файлов ВПР или олимпиад на GitHub пока не обнаружено. Продолжаю следить!")
     else:
-        send_message(peer_id, f"✅ Охота завершена! Найдено и отправлено новых источников: {found_count}")
+        send_message(peer_id, f"✅ Глубокая охота завершена! Найдено и отправлено новых баз: {found_count}")
 
 # ---------- ОБРАБОТКА КОМАНД ----------
 def handle_command(peer_id, text):
@@ -181,15 +218,15 @@ def handle_command(peer_id, text):
 
     elif text.startswith("/help"):
         help_text = (
-            "🤖 Бот-Охотник за контентом ВПР и Олимпиад (Powered by DeepSeek-V3):\n\n"
-            "/scan — запустить ИИ-сканирование GitHub на наличие баз заданий, файлов JSON/CSV и парсеров 🎯\n"
+            "🤖 Бот-Охотник за базами ВПР и Олимпиад (Продвинутая Code Search версия):\n\n"
+            "/scan — запустить точечный ИИ-поиск по файлам .json/.csv/.sql внутри репозиториев GitHub 🎯\n"
             "/help — показать эту справку"
         )
         send_message(peer_id, help_text)
 
 # ---------- ГЛАВНЫЙ ЦИКЛ ----------
 def main():
-    print("Бот-Охотник (DeepSeek-версия) успешно запущен...")
+    print("Бот-Охотник (Глубокий поиск файлов через DeepSeek) успешно запущен...")
     for event in longpoll.listen():
         if event.type == VkBotEventType.MESSAGE_NEW:
             msg_obj = event.obj.message
