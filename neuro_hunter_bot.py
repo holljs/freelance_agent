@@ -2,6 +2,7 @@ import os
 import json
 import time
 import sqlite3
+import random  # Добавлено для динамических пауз
 import requests
 from dotenv import load_dotenv
 from vk_api import VkApi
@@ -13,14 +14,14 @@ load_dotenv()
 VK_TOKEN = os.getenv("VK_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 SILICONFLOW_API_TOKEN = os.getenv("SILICONFLOW_API_TOKEN")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Критично для Code Search API
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Крайне критично для Code Search API
 
 # ---------- VK БОТ LONG POLL ----------
 vk_session = VkApi(token=VK_TOKEN)
 vk = vk_session.get_api()
 longpoll = VkBotLongPoll(vk_session, group_id=GROUP_ID)
 
-# База данных SQLite — перенастроена на отслеживание конкретных файлов
+# База данных SQLite — отслеживание конкретных файлов, чтобы избежать дублей
 DB_FILE = "neuro_hunter.db"
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 cursor = conn.cursor()
@@ -47,7 +48,7 @@ def send_message(peer_id, text):
     except Exception as e:
         print(f"Ошибка отправки сообщения в ВК: {e}")
 
-# ---------- СВЕРХДЕШЕВЫЙ И УМНЫЙ ФИЛЬТР НА DEEPSEEK-V3 ----------
+# ---------- ИИ-ФИЛЬТР НА DEEPSEEK-V3 ----------
 def ask_deepseek_sync(system_prompt, user_prompt):
     if not SILICONFLOW_API_TOKEN:
         print("❌ Ошибка: SILICONFLOW_API_TOKEN не настроен в .env")
@@ -80,15 +81,15 @@ def ask_deepseek_sync(system_prompt, user_prompt):
         print(f"❌ Ошибка вызова DeepSeek: {e}")
         return None
 
-# ---------- ГЛУБОКАЯ ОХОТА НА GITHUB ЗА СТРУКТУРИРОВАННЫМИ ФАЙЛАМИ ----------
+# ---------- СВЕРХЭФФЕКТИВНЫЙ ПОИСК ПО КОДУ GITHUB ----------
 def fetch_github_olympiad_files():
     """
-    Сканирует GitHub изнутри (Code Search) на наличие файлов баз данных
-    по ВПР и расширенному списку всероссийских олимпиад.
+    Сканирует внутренности GitHub (Code Search).
+    Запросы оптимизированы через оператор OR для экономии лимитов API.
     """
     url = "https://api.github.com/search/code"
     
-    # Расширенный список олимпиад и маркеров баз данных
+    # Полный список целевых олимпиад и тем ВПР
     search_keywords = [
         "vpr json", "впр математика 4 класс", "впр русский язык", "задания впр",
         "олимпиада кенгуру", "русский медвежонок олимпиада", "олимпиада кит",
@@ -97,61 +98,66 @@ def fetch_github_olympiad_files():
         "высшая проба задания", "олимпиада курчатов", "questions json", "tasks csv"
     ]
     
-    # Расширения файлов, где гарантированно есть готовая структура данных
-    file_extensions = ["json", "csv", "sql"]
-    
     headers = {"Accept": "application/vnd.github+json"}
     if GITHUB_TOKEN:
         headers["Authorization"] = f"token {GITHUB_TOKEN}"
     else:
-        print("⚠️ Предупреждение: GITHUB_TOKEN не задан. Поиск по коду может вызывать ошибки лимитов!")
+        print("⚠️ Ошибка: GITHUB_TOKEN не задан! Поиск по коду заблокирован без авторизации.")
+        return []
 
     discovered_files = []
     seen_urls = set()
     
-    # Поиск по коду работает только при наличии авторизации или жестких лимитах
+    print(f"🕵️‍♂️ Охотник начинает обход. Тем к проверке: {len(search_keywords)}")
+    
     for keyword in search_keywords:
-        for ext in file_extensions:
-            # Формируем жесткий поисковый запрос по коду
-            query = f"{keyword} extension:{ext}"
-            params = {"q": query, "per_page": 10}
+        # Упаковываем все расширения в один запрос через OR. 
+        # Вместо 3 запросов к GitHub API тратится всего 1! Лимиты будут жить.
+        query = f"{keyword} (extension:json OR extension:csv OR extension:sql)"
+        params = {"q": query, "per_page": 15}
+        
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=12)
             
-            try:
+            # Ловим жёсткий лимит Code Search API (у GitHub это 10 запросов в минуту)
+            if resp.status_code == 403:
+                print("⏳ Достигнут лимит GitHub API. Засыпаем на 60 секунд для полного сброса...")
+                time.sleep(60)
+                # Повторяем запрос после сна
                 resp = requests.get(url, headers=headers, params=params, timeout=12)
                 
-                # Ловим лимиты GitHub API (для поиска по коду они строгие — 30 запросов в минуту)
-                if resp.status_code == 403:
-                    print("⏳ Достигнут лимит запросов GitHub API. Засыпаем на 25 секунд...")
-                    time.sleep(25)
-                    continue
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data.get("items", [])
+                print(f"🔎 Ключевик '{keyword}' выдал результатов: {len(items)}")
+                
+                for item in items:
+                    file_url = item.get("html_url")
+                    repo_info = item.get("repository", {})
+                    repo_name = repo_info.get("full_name", "unknown")
                     
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for item in data.get("items", []):
-                        file_url = item.get("html_url")
-                        repo_info = item.get("repository", {})
-                        repo_name = repo_info.get("full_name", "unknown")
+                    # Отсекаем мусор, папки с домашками и студенческие песочницы
+                    path_lower = file_url.lower()
+                    if any(x in path_lower for x in ["homework", "lab1", "lab2", "test_project", "sandbox", "learning"]):
+                        continue
                         
-                        # Отсекаем студенческий мусор и лабы по ключевым словам в пути
-                        path_lower = file_url.lower()
-                        if any(x in path_lower for x in ["homework", "lab1", "lab2", "test_project", "sandbox"]):
-                            continue
-                            
-                        if file_url not in seen_urls:
-                            seen_urls.add(file_url)
-                            discovered_files.append({
-                                "file_name": item.get("name", "unknown"),
-                                "path": item.get("path", ""),
-                                "repo_name": repo_name,
-                                "url": file_url
-                            })
-                
-                # Микропауза, чтобы не злить GitHub
-                time.sleep(2)
-                
-            except Exception as e:
-                print(f"Ошибка поиска GitHub по коду '{query}': {e}")
-                time.sleep(2)
+                    if file_url not in seen_urls:
+                        seen_urls.add(file_url)
+                        discovered_files.append({
+                            "file_name": item.get("name", "unknown"),
+                            "path": item.get("path", ""),
+                            "repo_name": repo_name,
+                            "url": file_url
+                        })
+            else:
+                print(f"⚠️ Ошибка GitHub API ({resp.status_code}) на ключевом слове '{keyword}'")
+            
+            # Рандомная задержка (Jitter) от 4 до 7 сек, чтобы эмулировать поведение человека
+            time.sleep(random.uniform(4.0, 7.0))
+            
+        except Exception as e:
+            print(f"💥 Ошибка выполнения поискового запроса '{query}': {e}")
+            time.sleep(5)
                 
     return discovered_files
 
@@ -175,7 +181,7 @@ def process_hunting(peer_id):
     
     found_count = 0
     for file_item in files:
-        # Проверяем по базе данных, не находили ли мы этот конкретный файл ранее
+        # Исключаем дубликаты по базе данных
         cursor.execute("SELECT file_url FROM scanned_files WHERE file_url=?", (file_item["url"],))
         if cursor.fetchone():
             continue 
@@ -186,7 +192,7 @@ def process_hunting(peer_id):
         if not response or "ИГНОР" in response:
             continue
 
-        # Формируем сочное сообщение для отправки в ВК
+        # Красивое уведомление о сливе в ВК
         message = (
             f"🎯 НАЙДЕНА СТРУКТУРИРОВАННАЯ БАЗА ЗАДАНИЙ!\n\n"
             f"📁 Файл: {file_item['file_name']}\n"
@@ -196,13 +202,13 @@ def process_hunting(peer_id):
         )
         send_message(peer_id, message)
         
-        # Записываем файл в базу данных, чтобы не дублировать уведомления
+        # Сохраняем в кэш
         cursor.execute("INSERT OR IGNORE INTO scanned_files (file_url, file_name, repo_name) VALUES (?,?,?)", 
-                       (file_item["url"], file_item["file_name"], file_item["repo_name"]))
+                       (file_url := file_item["url"], file_item["file_name"], file_item["repo_name"]))
         conn.commit()
         
         found_count += 1
-        time.sleep(2)  # Пауза между отправками в ВК
+        time.sleep(2)  # Безопасный интервал для ВК API
 
     if found_count == 0:
         send_message(peer_id, "📭 Новых структурированных файлов ВПР или олимпиад на GitHub пока не обнаружено. Продолжаю следить!")
