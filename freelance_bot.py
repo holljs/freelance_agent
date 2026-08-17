@@ -7,6 +7,7 @@ from vk_api.utils import get_random_id
 from replicate import Client
 from dotenv import load_dotenv
 
+# Загружаем переменные окружения из .env
 load_dotenv()
 
 # --- НАСТРОЙКИ ---
@@ -20,6 +21,7 @@ replicate_client = Client(api_token=REPLICATE_API_TOKEN) if REPLICATE_API_TOKEN 
 vk_session = vk_api.VkApi(token=VK_TOKEN)
 vk = vk_session.get_api()
 
+# RSS-ленты фриланс-бирж
 RSS_URLS = [
     "https://www.fl.ru/rss/all.xml?category=5",
     "https://freelance.habr.com/tasks.rss"
@@ -71,16 +73,18 @@ def call_tokenrouter(system_prompt, user_content):
         "temperature": 0.4
     }
 
-    for attempt in range(2):
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=20)
-            if resp.status_code == 200:
-                res_json = resp.json()
-                return res_json["choices"][0]["message"]["content"].strip()
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=20)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            return res_json["choices"][0]["message"]["content"].strip()
+        elif resp.status_code == 429:
+            print("⚠️ TokenRouter: превышен лимит запросов (429), переключаемся на Replicate...")
+            return None
+        else:
             print(f"⚠️ TokenRouter статус {resp.status_code}: {resp.text}")
-        except Exception as e:
-            print(f"⚠️ Ошибка сети TokenRouter (попытка {attempt + 1}): {e}")
-        time.sleep(1)
+    except Exception as e:
+        print(f"⚠️ Ошибка сети TokenRouter: {e}")
     return None
 
 
@@ -116,8 +120,10 @@ def analyze_and_pitch(title, description, link):
     )
     user_content = f"Заголовок: {title}\nОписание: {description}\nСсылка: {link}"
 
+    # 1. Сначала пробуем TokenRouter
     answer = call_tokenrouter(system_prompt, user_content)
 
+    # 2. Если TokenRouter выдал 429 или недоступен — используем Replicate
     if not answer:
         print("🔄 Пробуем резервный вызов через Replicate...")
         answer = call_replicate_fallback(system_prompt, user_content)
@@ -165,7 +171,7 @@ def check_freelance():
                         print(f"❌ Пропуск: {title}")
 
                     save_task(task_id)
-                    time.sleep(1.5)
+                    time.sleep(2)
 
         except Exception as e:
             print(f"⚠️ Ошибка при обработке ленты {url}: {e}")
