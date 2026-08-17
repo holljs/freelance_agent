@@ -1,155 +1,180 @@
 import os
+import time
 import feedparser
 import requests
-import time
+import vk_api
+from vk_api.utils import get_random_id
 from replicate import Client
 from dotenv import load_dotenv
-import vk_api 
-from vk_api.utils import get_random_id
 
-# Загружаем данные из файла .env
 load_dotenv()
 
 # --- НАСТРОЙКИ ---
-VK_TOKEN = os.getenv("VK_TOKEN")           
-VK_USER_ID = os.getenv("VK_USER_ID")       
+VK_TOKEN = os.getenv("VK_TOKEN")
+VK_USER_ID = os.getenv("VK_USER_ID")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+TOKENROUTER_API_TOKEN = os.getenv("TOKENROUTER_API_TOKEN") or os.getenv("TOKENROUTER_API_KEY")
 
-client = Client(api_token=REPLICATE_API_TOKEN)
+replicate_client = Client(api_token=REPLICATE_API_TOKEN) if REPLICATE_API_TOKEN else None
 
-# Авторизуем бота в ВК
 vk_session = vk_api.VkApi(token=VK_TOKEN)
 vk = vk_session.get_api()
 
-# Меняем Хабр на крупнейшую биржу FL.ru (Категория: Программирование)
 RSS_URLS = [
-    "https://www.fl.ru/rss/all.xml?category=5"
+    "https://www.fl.ru/rss/all.xml?category=5",
+    "https://freelance.habr.com/tasks.rss"
 ]
 
-# Файл памяти, чтобы не присылать одни и те же заказы
 DB_FILE = "processed_tasks.txt"
+
 
 def load_processed_tasks():
     try:
-        with open(DB_FILE, "r") as f:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
             return set(f.read().splitlines())
     except FileNotFoundError:
         return set()
 
+
 def save_task(task_id):
-    with open(DB_FILE, "a") as f:
+    with open(DB_FILE, "a", encoding="utf-8") as f:
         f.write(f"{task_id}\n")
 
-# --- ОТПРАВКА В ВК ---
+
 def send_to_vk(text):
     try:
         vk.messages.send(
-            user_id=VK_USER_ID,
+            user_id=int(VK_USER_ID),
             message=text,
-            random_id=get_random_id() 
+            random_id=get_random_id()
         )
     except Exception as e:
-        print(f"Ошибка отправки сообщения в ВК: {e}")
+        print(f"⚠️ Ошибка отправки сообщения в ВК: {e}")
 
-def analyze_and_pitch(title, description, link):
-    # Достаем токен из окружения
-    SILICONFLOW_API_TOKEN = os.getenv("SILICONFLOW_API_TOKEN")
-    if not SILICONFLOW_API_TOKEN:
-        print("⚠️ Ошибка: SILICONFLOW_API_TOKEN не найден в .env")
+
+def call_tokenrouter(system_prompt, user_content):
+    if not TOKENROUTER_API_TOKEN:
         return None
 
-    system_prompt = (
-        "Ты — крутой Python-разработчик. Твой стек: боты (ВКонтакте и Telegram), FastAPI, парсинг данных, "
-        "интеграция сторонних API и работа с нейросетями (Replicate, OpenAI, генерация фото/видео/текста). "
-        "Проанализируй заказ. Если заказ можно выполнить с помощью Python, API, нейросетей или написав бота — "
-        "напиши профессиональный, вежливый и короткий отклик (питч), предложив свой стек и готовность начать. "
-        "Если заказ вообще не из нашей сферы (например: верстка HTML, дизайн логотипа в Photoshop, 1C-бухгалтерия, SEO-продвижение, копирайтинг) — "
-        "ответь строго одним словом: ИГНОР."
-    )
-    
-    url = "https://api.siliconflow.com/v1/chat/completions"
+    url = "https://api.tokenrouter.com/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {SILICONFLOW_API_TOKEN}",
+        "Authorization": f"Bearer {TOKENROUTER_API_TOKEN}",
         "Content-Type": "application/json"
     }
-    
     payload = {
-        "model": "deepseek-ai/DeepSeek-V3",  # 🔥 Заменили на копеечный DeepSeek!
+        "model": "deepseek/deepseek-v4-flash",
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Заголовок: {title}\nОписание: {description}"}
+            {"role": "user", "content": user_content}
         ],
-        "max_tokens": 600,
-        "temperature": 0.5
+        "max_tokens": 500,
+        "temperature": 0.4
     }
 
-    # 3 попытки достучаться до Китая, если упадет сеть
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
-            if response.status_code == 200:
-                res_json = response.json()
-                answer = res_json["choices"][0]["message"]["content"].strip()
-                
-                if "ИГНОР" in answer:
-                    return None
-                return answer
-            else:
-                print(f"⚠️ SiliconFlow вернул статус {response.status_code}: {response.text}")
+            resp = requests.post(url, json=payload, headers=headers, timeout=20)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                return res_json["choices"][0]["message"]["content"].strip()
+            print(f"⚠️ TokenRouter статус {resp.status_code}: {resp.text}")
         except Exception as e:
-            print(f"⚠️ Ошибка сети на попытке {attempt + 1}: {e}")
-        time.sleep(2)
-        
+            print(f"⚠️ Ошибка сети TokenRouter (попытка {attempt + 1}): {e}")
+        time.sleep(1)
     return None
 
-def check_freelance():
-    print("\nПроверяю биржу FL.ru...")
-    processed = load_processed_tasks()
-    
-    # Надеваем маску обычного пользователя Chrome
-    feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    
-    for url in RSS_URLS:
-        feed = feedparser.parse(url)
-        
-        # Рентген: смотрим реальный ответ
-        status = getattr(feed, 'status', 'Ошибка сети/Блокировка')
-        tasks_count = len(feed.entries)
-        print(f"🔎 Статус FL.ru: {status} | Найдено задач: {tasks_count}")
-        
-        for entry in feed.entries:
-            # Используем саму ссылку как 100% уникальный ID для FL.ru
-            task_id = entry.link 
-            
-            if task_id not in processed:
-                title = entry.title
-                description = entry.description
-                link = entry.link
-                
-                pitch = analyze_and_pitch(title, description, link)
-                
-                if pitch:
-                    # Подходит! Отправляем в ВК
-                    message = (
-                        f"🚨 НОВЫЙ ПОДХОДЯЩИЙ ЗАКАЗ!\n\n"
-                        f"📌 {title}\n\n"
-                        f"🔗 Ссылка: {link}\n\n"
-                        f"🤖 Готовый отклик:\n{pitch}"
-                    )
-                    send_to_vk(message)
-                    print(f"✅ ВЗЯЛИ В РАБОТУ: {title}")
-                else:
-                    # Не подходит! Выводим в лог
-                    print(f"❌ Пропустили: {title}")
-                
-                save_task(task_id)
-                time.sleep(2) 
 
-# Вечный двигатель
+def call_replicate_fallback(system_prompt, user_content):
+    if not replicate_client:
+        return None
+    try:
+        output = replicate_client.run(
+            "deepseek-ai/deepseek-r1",
+            input={
+                "prompt": f"{system_prompt}\n\nЗаказ:\n{user_content}",
+                "max_tokens": 500,
+                "temperature": 0.4
+            }
+        )
+        if isinstance(output, list):
+            return "".join(output).strip()
+        return str(output).strip()
+    except Exception as e:
+        print(f"⚠️ Ошибка вызова Replicate Fallback: {e}")
+        return None
+
+
+def analyze_and_pitch(title, description, link):
+    system_prompt = (
+        "Ты — опытный Python-разработчик и фрилансер. "
+        "Твой стек: Telegram и VK боты (aiogram, vk_api), FastAPI бэкенды, парсинг данных и веб-скрейпинг, "
+        "интеграция ИИ-моделей (OpenAI, DeepSeek, Replicate, генерация изображений/текста/голоса), автоматизация рутины.\n\n"
+        "Правила оценки заказа:\n"
+        "1. Если заказ НЕ подходит (1С, верстка лендингов, Figma/Photoshop дизайн, копирайтинг, SEO) — ответь строго одним словом: ИГНОР.\n"
+        "2. Если заказ подходит — напиши короткий (до 4-5 предложений), вежливый отклик: "
+        "покажи понимание задачи, предложи конкретное решение на Python/API и укажи готовность начать прямо сейчас."
+    )
+    user_content = f"Заголовок: {title}\nОписание: {description}\nСсылка: {link}"
+
+    answer = call_tokenrouter(system_prompt, user_content)
+
+    if not answer:
+        print("🔄 Пробуем резервный вызов через Replicate...")
+        answer = call_replicate_fallback(system_prompt, user_content)
+
+    if answer and "ИГНОР" not in answer.upper():
+        return answer
+    return None
+
+
+def check_freelance():
+    print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Проверяю биржи фриланса...")
+    processed = load_processed_tasks()
+
+    feedparser.USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+
+    for url in RSS_URLS:
+        try:
+            feed = feedparser.parse(url)
+            status = getattr(feed, 'status', '200 (OK)')
+            print(f"🔎 RSS: {url[:30]}... | Статус: {status} | Задач: {len(feed.entries)}")
+
+            for entry in feed.entries:
+                task_id = entry.link
+
+                if task_id not in processed:
+                    title = getattr(entry, 'title', 'Без заголовка')
+                    description = getattr(entry, 'description', '')
+                    link = entry.link
+
+                    pitch = analyze_and_pitch(title, description, link)
+
+                    if pitch:
+                        message = (
+                            f"🚨 ПОДХОДЯЩИЙ ЗАКАЗ!\n\n"
+                            f"📌 {title}\n\n"
+                            f"🔗 {link}\n\n"
+                            f"🤖 Черновик отклика:\n{pitch}"
+                        )
+                        send_to_vk(message)
+                        print(f"✅ ВЗЯТО: {title}")
+                    else:
+                        print(f"❌ Пропуск: {title}")
+
+                    save_task(task_id)
+                    time.sleep(1.5)
+
+        except Exception as e:
+            print(f"⚠️ Ошибка при обработке ленты {url}: {e}")
+
+
 if __name__ == "__main__":
     while True:
         try:
             check_freelance()
         except Exception as e:
-            print(f"Ошибка в цикле: {e}")
+            print(f"⚠️ Ошибка в главном цикле: {e}")
         time.sleep(300)
