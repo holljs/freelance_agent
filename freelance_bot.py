@@ -24,7 +24,7 @@ vk = vk_session.get_api()
 # RSS-ленты фриланс-бирж
 RSS_URLS = [
     "https://www.fl.ru/rss/all.xml?category=5",
-    "https://freelance.habr.com/tasks.rss"
+    "https://freelance.habr.com/tasks.rss?q="  # Либо оставить только FL.ru, если хватает его потока
 ]
 
 DB_FILE = "processed_tasks.txt"
