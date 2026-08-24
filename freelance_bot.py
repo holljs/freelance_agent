@@ -32,42 +32,32 @@ DB_FILE = "processed_tasks.txt"
 
 
 
+
 def parse_freelancehunt():
-    """Парсит свежие заказы с Freelancehunt (без RSS)"""
+    """Парсит Freelancehunt"""
     url = "https://freelancehunt.com/projects"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept-Language": "ru,en;q=0.9"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code != 200:
-            print(f"⚠️ Freelancehunt статус {resp.status_code}")
             return []
         soup = BeautifulSoup(resp.text, 'html.parser')
         tasks = []
-        for card in soup.select('[data-project-id], .project-card, article, [class*="project"]')[:30]:
+        for card in soup.select('[data-project-id], .project-card, article')[:30]:
             try:
-                title_el = card.select_one('h3, h4, .project-title, a')
-                link_el = card.select_one('a[href*="/project/"]') or title_el
-                desc_el = card.select_one('.project-description, p, [class*="description"]')
-                if not title_el or not link_el:
-                    continue
-                href = link_el.get('href', '')
+                t = card.select_one('h3, h4, .project-title, a')
+                l = card.select_one('a[href*="/project/"]') or t
+                d = card.select_one('.project-description, p')
+                if not t or not l: continue
+                href = l.get('href', '')
                 if not href.startswith('http'):
                     href = urljoin("https://freelancehunt.com", href)
-                tasks.append({
-                    'title': title_el.get_text(strip=True),
-                    'description': (desc_el.get_text(strip=True) if desc_el else '')[:500],
-                    'link': href
-                })
-            except Exception:
-                continue
+                tasks.append({'title': t.get_text(strip=True), 'description': (d.get_text(strip=True) if d else '')[:500], 'link': href})
+            except: continue
         return tasks
     except Exception as e:
-        print(f"⚠️ Ошибка парсинга Freelancehunt: {e}")
+        print(f"FH error: {e}")
         return []
-
 
 def load_processed_tasks():
     try:
@@ -215,36 +205,23 @@ def check_freelance():
         except Exception as e:
             print(f"⚠️ Ошибка при обработке ленты {url}: {e}")
 
-    # Парсим Freelancehunt напрямую
-    print(f"
-🔎 Парсю Freelancehunt...")
+
+    # Парсим Freelancehunt
+    print("Парсю Freelancehunt...")
     fh_tasks = parse_freelancehunt()
-    print(f"   Найдено заказов: {len(fh_tasks)}")
+    print(f"FH найдено: {len(fh_tasks)}")
     for task in fh_tasks:
         task_id = task['link']
         if task_id not in processed:
             pitch = analyze_and_pitch(task['title'], task['description'], task['link'])
             if pitch:
-                message = (
-                    f"🚨 ПОДХОДЯЩИЙ ЗАКАЗ (Freelancehunt)!
-
-"
-                    f"📌 {task['title']}
-
-"
-                    f"🔗 {task['link']}
-
-"
-                    f"🤖 Черновик отклика:
-{pitch}"
-                )
+                message = "ЗАКАЗ (FH): " + task['title'] + "\n" + task['link'] + "\n\n" + pitch
                 send_to_vk(message)
-                print(f"✅ ВЗЯТО (FH): {task['title']}")
+                print("ВЗЯТО FH: " + task['title'])
             else:
-                print(f"❌ Пропуск (FH): {task['title']}")
+                print("Пропуск FH: " + task['title'])
             save_task(task_id)
             time.sleep(2)
-
 
 
 if __name__ == "__main__":
