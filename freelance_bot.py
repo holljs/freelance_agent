@@ -6,6 +6,8 @@ import vk_api
 from vk_api.utils import get_random_id
 from replicate import Client
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 # Загружаем переменные окружения из .env
 load_dotenv()
@@ -31,6 +33,44 @@ RSS_URLS = [
 ]
 
 DB_FILE = "processed_tasks.txt"
+
+
+
+def parse_freelancehunt():
+    """Парсит свежие заказы с Freelancehunt (без RSS)"""
+    url = "https://freelancehunt.com/projects"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "ru,en;q=0.9"
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            print(f"⚠️ Freelancehunt статус {resp.status_code}")
+            return []
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        tasks = []
+        for card in soup.select('[data-project-id], .project-card, article, [class*="project"]')[:30]:
+            try:
+                title_el = card.select_one('h3, h4, .project-title, a')
+                link_el = card.select_one('a[href*="/project/"]') or title_el
+                desc_el = card.select_one('.project-description, p, [class*="description"]')
+                if not title_el or not link_el:
+                    continue
+                href = link_el.get('href', '')
+                if not href.startswith('http'):
+                    href = urljoin("https://freelancehunt.com", href)
+                tasks.append({
+                    'title': title_el.get_text(strip=True),
+                    'description': (desc_el.get_text(strip=True) if desc_el else '')[:500],
+                    'link': href
+                })
+            except Exception:
+                continue
+        return tasks
+    except Exception as e:
+        print(f"⚠️ Ошибка парсинга Freelancehunt: {e}")
+        return []
 
 
 def load_processed_tasks():

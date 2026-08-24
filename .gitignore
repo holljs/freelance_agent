@@ -7,3 +7,6 @@ __pycache__/
 backups/
 *.backup
 *.bak
+.env
+processed_tasks.txt
+neuro_hunter.db

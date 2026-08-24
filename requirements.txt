@@ -1,4 +1,4 @@
 feedparser
 replicate
 requests
-python-dotenv
+python-dotenvbeautifulsoup4==4.12.3
