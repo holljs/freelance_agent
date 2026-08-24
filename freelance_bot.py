@@ -25,11 +25,7 @@ vk = vk_session.get_api()
 
 # Заменяем RSS_URLS на:
 RSS_URLS = [
-    "https://freelance.habr.com/tasks?categories=development_bots,development_all_inclusive,development_backend,development_scripts.rss",
-    # Avito через их RSS (работает!)
-    "https://www.avito.ru/rss?q=%D0%B1%D0%BE%D1%82&categoryId=115",   # "бот"
-    "https://www.avito.ru/rss?q=%D0%BF%D0%B0%D1%80%D1%81%D0%B8%D0%BD%D0%B3&categoryId=115",  # "парсинг"
-    "https://www.avito.ru/rss?q=%D0%B0%D0%B2%D1%82%D0%BE%D0%BC%D0%B0%D1%82%D0%B8%D0%B7%D0%B0%D1%86%D0%B8%D1%8F&categoryId=115",  # "автоматизация"
+    "https://www.fl.ru/rss/all.xml?category=5",
 ]
 
 DB_FILE = "processed_tasks.txt"
@@ -218,6 +214,37 @@ def check_freelance():
 
         except Exception as e:
             print(f"⚠️ Ошибка при обработке ленты {url}: {e}")
+
+    # Парсим Freelancehunt напрямую
+    print(f"
+🔎 Парсю Freelancehunt...")
+    fh_tasks = parse_freelancehunt()
+    print(f"   Найдено заказов: {len(fh_tasks)}")
+    for task in fh_tasks:
+        task_id = task['link']
+        if task_id not in processed:
+            pitch = analyze_and_pitch(task['title'], task['description'], task['link'])
+            if pitch:
+                message = (
+                    f"🚨 ПОДХОДЯЩИЙ ЗАКАЗ (Freelancehunt)!
+
+"
+                    f"📌 {task['title']}
+
+"
+                    f"🔗 {task['link']}
+
+"
+                    f"🤖 Черновик отклика:
+{pitch}"
+                )
+                send_to_vk(message)
+                print(f"✅ ВЗЯТО (FH): {task['title']}")
+            else:
+                print(f"❌ Пропуск (FH): {task['title']}")
+            save_task(task_id)
+            time.sleep(2)
+
 
 
 if __name__ == "__main__":
