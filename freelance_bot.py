@@ -6,8 +6,6 @@ import vk_api
 from vk_api.utils import get_random_id
 from replicate import Client
 from dotenv import load_dotenv
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
 # Загружаем переменные окружения из .env
 load_dotenv()
@@ -30,34 +28,6 @@ RSS_URLS = [
 
 DB_FILE = "processed_tasks.txt"
 
-
-
-
-def parse_freelancehunt():
-    """Парсит Freelancehunt"""
-    url = "https://freelancehunt.com/projects"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code != 200:
-            return []
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        tasks = []
-        for card in soup.select('[data-project-id], .project-card, article')[:30]:
-            try:
-                t = card.select_one('h3, h4, .project-title, a')
-                l = card.select_one('a[href*="/project/"]') or t
-                d = card.select_one('.project-description, p')
-                if not t or not l: continue
-                href = l.get('href', '')
-                if not href.startswith('http'):
-                    href = urljoin("https://freelancehunt.com", href)
-                tasks.append({'title': t.get_text(strip=True), 'description': (d.get_text(strip=True) if d else '')[:500], 'link': href})
-            except: continue
-        return tasks
-    except Exception as e:
-        print(f"FH error: {e}")
-        return []
 
 def load_processed_tasks():
     try:
@@ -204,24 +174,6 @@ def check_freelance():
 
         except Exception as e:
             print(f"⚠️ Ошибка при обработке ленты {url}: {e}")
-
-
-    # Парсим Freelancehunt
-    print("Парсю Freelancehunt...")
-    fh_tasks = parse_freelancehunt()
-    print(f"FH найдено: {len(fh_tasks)}")
-    for task in fh_tasks:
-        task_id = task['link']
-        if task_id not in processed:
-            pitch = analyze_and_pitch(task['title'], task['description'], task['link'])
-            if pitch:
-                message = "ЗАКАЗ (FH): " + task['title'] + "\n" + task['link'] + "\n\n" + pitch
-                send_to_vk(message)
-                print("ВЗЯТО FH: " + task['title'])
-            else:
-                print("Пропуск FH: " + task['title'])
-            save_task(task_id)
-            time.sleep(2)
 
 
 if __name__ == "__main__":
