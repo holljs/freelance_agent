@@ -21,10 +21,13 @@ replicate_client = Client(api_token=REPLICATE_API_TOKEN) if REPLICATE_API_TOKEN 
 vk_session = vk_api.VkApi(token=VK_TOKEN)
 vk = vk_session.get_api()
 
-# RSS-ленты фриланс-бирж
+# Заменяем RSS_URLS на:
 RSS_URLS = [
-    "https://www.fl.ru/rss/all.xml?category=5",
-    "https://freelance.habr.com/tasks?categories=development_bots,development_all_inclusive,development_backend,development_scripts.rss"
+    "https://freelance.habr.com/tasks?categories=development_bots,development_all_inclusive,development_backend,development_scripts.rss",
+    # Avito через их RSS (работает!)
+    "https://www.avito.ru/rss?q=%D0%B1%D0%BE%D1%82&categoryId=115",   # "бот"
+    "https://www.avito.ru/rss?q=%D0%BF%D0%B0%D1%80%D1%81%D0%B8%D0%BD%D0%B3&categoryId=115",  # "парсинг"
+    "https://www.avito.ru/rss?q=%D0%B0%D0%B2%D1%82%D0%BE%D0%BC%D0%B0%D1%82%D0%B8%D0%B7%D0%B0%D1%86%D0%B8%D1%8F&categoryId=115",  # "автоматизация"
 ]
 
 DB_FILE = "processed_tasks.txt"
